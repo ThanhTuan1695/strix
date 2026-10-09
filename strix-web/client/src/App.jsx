@@ -14,7 +14,14 @@ function apiFetch(url, opts = {}) {
   const headers = { ...opts.headers };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (opts.body && typeof opts.body === 'string') headers['Content-Type'] = headers['Content-Type'] || 'application/json';
-  return fetch(url, { ...opts, headers });
+  return fetch(url, { ...opts, headers }).then(res => {
+    if (res.status === 401 && token) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.location.reload();
+    }
+    return res;
+  });
 }
 window.apiFetch = apiFetch;
 

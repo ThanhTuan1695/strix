@@ -15,6 +15,7 @@ services:
       - MONGO_URL=mongodb://mongo:27017
       - MONGO_DB=strix
       - PORT=3001
+      - JWT_SECRET=${JWT_SECRET:-change-me-to-a-random-secret}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data/strix_runs:/app/strix_runs
