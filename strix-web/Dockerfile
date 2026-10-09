@@ -41,7 +41,7 @@ RUN apt-get update \
 # Fix editable install path (was /build, now /opt/strix)
 RUN sed -i 's|/build|/opt/strix|g' /opt/strix/.venv/lib/python3.12/site-packages/_editable_impl_strix_agent.pth \
     && ldconfig \
-    && printf '#!/bin/sh\nexec /opt/strix/.venv/bin/python -m strix.interface.main "$@"\n' > /usr/local/bin/strix \
+    && printf '#!/bin/sh\nexec /opt/strix/.venv/bin/python -W ignore::RuntimeWarning -m strix.interface.main "$@"\n' > /usr/local/bin/strix \
     && chmod +x /usr/local/bin/strix \
     && mkdir -p /root/.strix/bin \
     && ln -s /usr/local/bin/strix /root/.strix/bin/strix

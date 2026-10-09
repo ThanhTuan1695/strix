@@ -11,13 +11,17 @@ echo "=== Packaging Pentest Team v${VERSION} ==="
 echo "[1/4] Building Docker image..."
 docker compose build
 
-# Save image to tar
-echo "[2/4] Exporting Docker images..."
+# Pull strix-sandbox if not present
+echo "[2/5] Pulling strix-sandbox image..."
+docker pull ghcr.io/usestrix/strix-sandbox:1.3.0
+
+# Save all images to tar
+echo "[3/5] Exporting Docker images..."
 mkdir -p dist
-docker save strix-web-app mongo:7 | gzip > "dist/images.tar.gz"
+docker save strix-web-app mongo:7 ghcr.io/usestrix/strix-sandbox:1.3.0 | gzip > "dist/images.tar.gz"
 
 # Create distribution folder
-echo "[3/4] Creating distribution package..."
+echo "[4/5] Creating distribution package..."
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}/data/strix_runs" "${DIST_DIR}/data/uploads" "${DIST_DIR}/data/mobile-uploads" "${DIST_DIR}/data/report-templates"
 
@@ -69,7 +73,7 @@ if ! docker info > /dev/null 2>&1; then
 fi
 
 # Load images if not already loaded
-if ! docker image inspect strix-web-app > /dev/null 2>&1; then
+if ! docker image inspect strix-web-app > /dev/null 2>&1 || ! docker image inspect ghcr.io/usestrix/strix-sandbox:1.3.0 > /dev/null 2>&1; then
   echo "Loading Docker images (first time only)..."
   docker load -i images.tar.gz
 fi
@@ -111,7 +115,7 @@ chmod +x "${DIST_DIR}/stop.sh"
 cp dist/images.tar.gz "${DIST_DIR}/"
 
 # Create final archive
-echo "[4/4] Creating archive..."
+echo "[5/5] Creating archive..."
 cd dist
 tar czf "${DIST_NAME}.tar.gz" "${DIST_NAME}/"
 cd ..
