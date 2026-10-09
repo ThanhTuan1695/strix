@@ -126,28 +126,32 @@ export default function App() {
 
       <main className="main">
         {activeTab === 'scan' && (
-          <div className="grid">
-            {isAdmin && (
+          isAdmin ? (
+            <div className="grid">
               <div className="col-left">
                 <ConfigPanel onConfigured={setConfigured} />
               </div>
-            )}
-            <div className={isAdmin ? 'col-right' : 'col-full'}>
-              <ScanPanel configured={configured || !isAdmin} onScanStarted={handleScanStarted} />
+              <div>
+                <ScanPanel configured={configured} onScanStarted={handleScanStarted} />
+              </div>
             </div>
-          </div>
+          ) : (
+            <ScanPanel configured={true} onScanStarted={handleScanStarted} />
+          )
         )}
         {activeTab === 'mobile' && (
-          <div className="grid">
-            {isAdmin && (
+          isAdmin ? (
+            <div className="grid">
               <div className="col-left">
                 <ConfigPanel onConfigured={setConfigured} />
               </div>
-            )}
-            <div className={isAdmin ? 'col-right' : 'col-full'}>
-              <MobileScanPanel configured={configured || !isAdmin} onScanStarted={handleScanStarted} />
+              <div>
+                <MobileScanPanel configured={configured} onScanStarted={handleScanStarted} />
+              </div>
             </div>
-          </div>
+          ) : (
+            <MobileScanPanel configured={true} onScanStarted={handleScanStarted} />
+          )
         )}
         {activeTab === 'scans' && (
           <ScanManager
