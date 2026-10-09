@@ -1,0 +1,11 @@
+node_modules/
+client/dist/
+dist/
+data/
+strix_runs/
+uploads/
+mobile-uploads/
+report-templates/
+strix-src/.venv/
+.env
+.claude/

@@ -1,0 +1,27 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    env_file: .env
+    environment:
+      - MONGO_URL=mongodb://mongo:27017
+      - MONGO_DB=strix
+      - PORT=3001
+    volumes:
+      - ./data/strix_runs:/app/strix_runs
+      - ./data/uploads:/app/uploads
+      - ./data/mobile-uploads:/app/mobile-uploads
+      - ./data/report-templates:/app/report-templates
+    depends_on:
+      - mongo
+
+volumes:
+  mongo-data:
