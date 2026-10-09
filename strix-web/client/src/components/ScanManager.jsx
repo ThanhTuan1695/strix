@@ -27,8 +27,8 @@ export default function ScanManager({ activeScanId, onSwitchScan, onViewFindings
   const outputRef = useRef(null);
 
   useEffect(() => {
-    fetch('/api/providers').then(r => r.json()).then(setProviders);
-    fetch('/api/config').then(r => r.json()).then(cfg => {
+    window.apiFetch('/api/providers').then(r => r.json()).then(setProviders);
+    window.apiFetch('/api/config').then(r => r.json()).then(cfg => {
       if (cfg.llm) setLlm(cfg.llm);
       if (cfg.apiBase) setApiBase(cfg.apiBase);
     });
@@ -46,7 +46,7 @@ export default function ScanManager({ activeScanId, onSwitchScan, onViewFindings
     if (!selectedId) return;
     const fetchDetail = async () => {
       try {
-        const res = await fetch(`/api/scan/${selectedId}`);
+        const res = await window.apiFetch(`/api/scan/${selectedId}`);
         if (res.ok) {
           const data = await res.json();
           if (!data.findings?.length && data.mergedFindings?.length) data.findings = data.mergedFindings;
@@ -70,7 +70,7 @@ export default function ScanManager({ activeScanId, onSwitchScan, onViewFindings
 
   const loadAllScans = async () => {
     try {
-      const res = await fetch('/api/all-scans');
+      const res = await window.apiFetch('/api/all-scans');
       setAllScans(await res.json());
     } catch {}
   };
@@ -89,10 +89,10 @@ export default function ScanManager({ activeScanId, onSwitchScan, onViewFindings
     }
     setConfirmDelete(null);
     if (id.startsWith('scan-') || id.startsWith('mobile-')) {
-      await fetch(`/api/scan/${id}`, { method: 'DELETE' });
+      await window.apiFetch(`/api/scan/${id}`, { method: 'DELETE' });
     } else if (id.startsWith('run-')) {
       const runName = id.replace('run-', '');
-      await fetch(`/api/runs/${encodeURIComponent(runName)}`, { method: 'DELETE' });
+      await window.apiFetch(`/api/runs/${encodeURIComponent(runName)}`, { method: 'DELETE' });
     }
     loadAllScans();
     if (id === selectedId) {
@@ -102,20 +102,20 @@ export default function ScanManager({ activeScanId, onSwitchScan, onViewFindings
   };
 
   const handleStop = async () => {
-    await fetch(`/api/scan/${selectedId}/stop`, { method: 'POST' });
+    await window.apiFetch(`/api/scan/${selectedId}/stop`, { method: 'POST' });
   };
 
   const handleRename = async (id) => {
     if (!renameValue.trim()) { setRenaming(null); return; }
     if (id.startsWith('scan-')) {
-      await fetch(`/api/scan/${id}`, {
+      await window.apiFetch(`/api/scan/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ runName: renameValue.trim() }),
       });
     } else if (id.startsWith('run-')) {
       const runName = id.replace('run-', '');
-      await fetch(`/api/runs/${encodeURIComponent(runName)}`, {
+      await window.apiFetch(`/api/runs/${encodeURIComponent(runName)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ newName: renameValue.trim() }),
@@ -128,7 +128,7 @@ export default function ScanManager({ activeScanId, onSwitchScan, onViewFindings
   const handleSaveConfig = async () => {
     setSaving(true);
     const isOllamaModel = llm.startsWith('ollama/');
-    await fetch('/api/config', {
+    await window.apiFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ llm, apiKey: isOllamaModel ? 'ollama' : apiKey, apiBase: isOllamaModel ? '' : apiBase }),
@@ -142,7 +142,7 @@ export default function ScanManager({ activeScanId, onSwitchScan, onViewFindings
     if (!selectedId?.startsWith('scan-')) return;
     setRetrying(true);
     try {
-      const res = await fetch(`/api/scan/${selectedId}/retry`, { method: 'POST' });
+      const res = await window.apiFetch(`/api/scan/${selectedId}/retry`, { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
         setSelectedId(data.scanId);

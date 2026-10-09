@@ -31,7 +31,7 @@ export default function ReportView({ findings, meta }) {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/report', {
+      const res = await window.apiFetch('/api/report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -68,7 +68,7 @@ export default function ReportView({ findings, meta }) {
     try {
       const fd = new FormData();
       fd.append('template', file);
-      const res = await fetch('/api/report/template/upload', { method: 'POST', body: fd });
+      const res = await window.apiFetch('/api/report/template/upload', { method: 'POST', body: fd });
       if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
       const data = await res.json();
       setTemplate(data);
@@ -88,7 +88,7 @@ export default function ReportView({ findings, meta }) {
       const usedFindings = selectedFindings.length
         ? findings.filter((_, i) => selectedFindings.includes(i))
         : findings;
-      const res = await fetch('/api/report/template/generate', {
+      const res = await window.apiFetch('/api/report/template/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

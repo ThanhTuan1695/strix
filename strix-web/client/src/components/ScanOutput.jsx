@@ -15,8 +15,8 @@ export default function ScanOutput({ scanId, onScanComplete, onSwitchScan }) {
   const notifiedRef = useRef(false);
 
   useEffect(() => {
-    fetch('/api/providers').then(r => r.json()).then(setProviders);
-    fetch('/api/config').then(r => r.json()).then(cfg => { if (cfg.llm) setLlm(cfg.llm); });
+    window.apiFetch('/api/providers').then(r => r.json()).then(setProviders);
+    window.apiFetch('/api/config').then(r => r.json()).then(cfg => { if (cfg.llm) setLlm(cfg.llm); });
     loadAllScans();
   }, []);
 
@@ -25,7 +25,7 @@ export default function ScanOutput({ scanId, onScanComplete, onSwitchScan }) {
   }, [scanId]);
 
   const loadAllScans = () => {
-    fetch('/api/scans').then(r => r.json()).then(setAllScans);
+    window.apiFetch('/api/scans').then(r => r.json()).then(setAllScans);
   };
 
   useEffect(() => {
@@ -33,7 +33,7 @@ export default function ScanOutput({ scanId, onScanComplete, onSwitchScan }) {
     notifiedRef.current = false;
     const poll = setInterval(async () => {
       try {
-        const res = await fetch(`/api/scan/${scanId}`);
+        const res = await window.apiFetch(`/api/scan/${scanId}`);
         const data = await res.json();
         setScan(data);
         loadAllScans();
@@ -58,11 +58,11 @@ export default function ScanOutput({ scanId, onScanComplete, onSwitchScan }) {
     if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
   }, [scan?.output]);
 
-  const handleStop = () => fetch(`/api/scan/${scanId}/stop`, { method: 'POST' });
+  const handleStop = () => window.apiFetch(`/api/scan/${scanId}/stop`, { method: 'POST' });
 
   const handleSaveConfig = async () => {
     setSaving(true);
-    await fetch('/api/config', {
+    await window.apiFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ llm, apiKey }),
@@ -75,7 +75,7 @@ export default function ScanOutput({ scanId, onScanComplete, onSwitchScan }) {
   const handleRetry = async () => {
     setRetrying(true);
     try {
-      const res = await fetch(`/api/scan/${scanId}/retry`, { method: 'POST' });
+      const res = await window.apiFetch(`/api/scan/${scanId}/retry`, { method: 'POST' });
       const data = await res.json();
       if (res.ok && onSwitchScan) {
         onSwitchScan(data.scanId);
@@ -86,13 +86,13 @@ export default function ScanOutput({ scanId, onScanComplete, onSwitchScan }) {
 
   const handleSelectScan = async (id) => {
     if (onSwitchScan) onSwitchScan(id);
-    const res = await fetch(`/api/scan/${id}`);
+    const res = await window.apiFetch(`/api/scan/${id}`);
     setScan(await res.json());
   };
 
   const handleDeleteScan = async (id, e) => {
     e.stopPropagation();
-    await fetch(`/api/scan/${id}`, { method: 'DELETE' });
+    await window.apiFetch(`/api/scan/${id}`, { method: 'DELETE' });
     loadAllScans();
     if (id === scanId && onSwitchScan) {
       const remaining = allScans.filter(s => s.id !== id);

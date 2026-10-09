@@ -21,7 +21,7 @@ export default function ScanPanel({ configured, onScanStarted }) {
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    fetch('/api/scan-options').then(r => r.json()).then(setOptions);
+    window.apiFetch('/api/scan-options').then(r => r.json()).then(setOptions);
   }, []);
 
   const addTarget = () => setTargets([...targets, '']);
@@ -39,7 +39,7 @@ export default function ScanPanel({ configured, onScanStarted }) {
     const form = new FormData();
     form.append('file', file);
     try {
-      const res = await fetch('/api/upload-spec', { method: 'POST', body: form });
+      const res = await window.apiFetch('/api/upload-spec', { method: 'POST', body: form });
       const data = await res.json();
       if (res.ok) {
         setSpecFiles(prev => [...prev, { name: file.name, path: data.path, size: data.size }]);
@@ -70,7 +70,7 @@ export default function ScanPanel({ configured, onScanStarted }) {
     setStarting(true);
     setError('');
     try {
-      const res = await fetch('/api/scan', {
+      const res = await window.apiFetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

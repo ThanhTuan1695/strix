@@ -9,10 +9,13 @@ import multer from 'multer';
 import { MobSFClient, normalizeMobSFFindings, extractApiEndpoints, getMobSFAppInfo } from './mobsf.js';
 import { runAllSkills, enrichFindings, getAvailableSkills, runSkill } from './mobile-agent.js';
 import { connectDB, saveScan, saveMobileScan, deleteScan, deleteMobileScan, loadAllScans, loadAllMobileScans } from './db.js';
+import { initUsers, authMiddleware, adminOnly, authRoutes } from './auth.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+app.use(authMiddleware);
+authRoutes(app);
 
 const UPLOADS_DIR = resolve('./uploads');
 const upload = multer({ dest: UPLOADS_DIR, limits: { fileSize: 50 * 1024 * 1024 } });
@@ -124,7 +127,7 @@ app.get('/api/config', async (_req, res) => {
   });
 });
 
-app.post('/api/config', async (req, res) => {
+app.post('/api/config', adminOnly, async (req, res) => {
   const { llm, apiKey, apiBase } = req.body;
   const config = await loadConfig();
   if (llm) config.llm = llm;
@@ -2430,6 +2433,7 @@ const PORT = process.env.PORT || 3001;
 (async () => {
   try {
     await connectDB();
+    await initUsers();
     const savedScans = await loadAllScans();
     for (const s of savedScans) {
       if (s.status === 'running') s.status = 'interrupted';

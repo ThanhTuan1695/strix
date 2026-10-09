@@ -40,7 +40,7 @@ export default function FindingsView({ findings, findingsMap = {}, viewingScanId
       const runName = scanId.replace('run-', '');
       url = `/api/runs/${encodeURIComponent(runName)}/finding/${findingId}`;
     } else return;
-    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
+    const res = await window.apiFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
     if (res.ok && onFindingsUpdated) onFindingsUpdated(scanId);
     return res.ok;
   };
@@ -55,7 +55,7 @@ export default function FindingsView({ findings, findingsMap = {}, viewingScanId
       const runName = scanId.replace('run-', '');
       url = `/api/runs/${encodeURIComponent(runName)}/finding/${findingId}`;
     } else return;
-    const res = await fetch(url, { method: 'DELETE' });
+    const res = await window.apiFetch(url, { method: 'DELETE' });
     if (res.ok) {
       setSelectedId(null);
       if (onFindingsUpdated) onFindingsUpdated(scanId);

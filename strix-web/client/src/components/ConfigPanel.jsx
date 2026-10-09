@@ -21,8 +21,8 @@ export default function ConfigPanel({ onConfigured }) {
   const selectedProvider = providers.find(p => p.id === llm);
 
   useEffect(() => {
-    fetch(`${API}/providers`).then(r => r.json()).then(setProviders);
-    fetch(`${API}/config`).then(r => r.json()).then(cfg => {
+    window.apiFetch(`${API}/providers`).then(r => r.json()).then(setProviders);
+    window.apiFetch(`${API}/config`).then(r => r.json()).then(cfg => {
       if (cfg.llm) setLlm(cfg.llm);
       if (cfg.apiBase) setApiBase(cfg.apiBase);
       if (cfg.hasKey) {
@@ -36,7 +36,7 @@ export default function ConfigPanel({ onConfigured }) {
     if (!key || key.length < 10) return;
     setLoadingGroq(true);
     try {
-      const res = await fetch(`${API}/groq-models?key=${encodeURIComponent(key)}`);
+      const res = await window.apiFetch(`${API}/groq-models?key=${encodeURIComponent(key)}`);
       const models = await res.json();
       if (models.length) setGroqModels(models);
     } catch {}
@@ -48,7 +48,7 @@ export default function ConfigPanel({ onConfigured }) {
     const body = { llm, apiBase: (isOllama || isGroq) ? '' : apiBase };
     if (isOllama) body.apiKey = 'ollama';
     else if (keyChanged && apiKey) body.apiKey = apiKey;
-    const res = await fetch(`${API}/config`, {
+    const res = await window.apiFetch(`${API}/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

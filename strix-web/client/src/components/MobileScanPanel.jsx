@@ -27,7 +27,7 @@ export default function MobileScanPanel({ configured, onScanStarted }) {
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    fetch('/api/mobile/status').then(r => r.json()).then(data => {
+    window.apiFetch('/api/mobile/status').then(r => r.json()).then(data => {
       setMobsfOnline(data.mobsfAvailable);
       setDockerAvailable(data.dockerAvailable);
       setSkills(data.skills || []);
@@ -39,7 +39,7 @@ export default function MobileScanPanel({ configured, onScanStarted }) {
   useEffect(() => {
     if (scanMode !== 'dynamic') return;
     const check = () => {
-      fetch('/api/mobile/dynamic/status').then(r => r.json()).then(setDynamicStatus).catch(() => {});
+      window.apiFetch('/api/mobile/dynamic/status').then(r => r.json()).then(setDynamicStatus).catch(() => {});
     };
     check();
     const iv = setInterval(check, 10000);
@@ -58,7 +58,7 @@ export default function MobileScanPanel({ configured, onScanStarted }) {
     const form = new FormData();
     form.append('file', f);
     try {
-      const res = await fetch('/api/mobile/upload', { method: 'POST', body: form });
+      const res = await window.apiFetch('/api/mobile/upload', { method: 'POST', body: form });
       const data = await res.json();
       if (res.ok) {
         setUploadedFile(data);
@@ -89,7 +89,7 @@ export default function MobileScanPanel({ configured, onScanStarted }) {
     if (!uploadedFile) return;
     setError('');
     try {
-      const res = await fetch('/api/mobile/scan', {
+      const res = await window.apiFetch('/api/mobile/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -119,7 +119,7 @@ export default function MobileScanPanel({ configured, onScanStarted }) {
     if (!uploadedFile) return;
     setError('');
     try {
-      const res = await fetch('/api/mobile/dynamic/scan', {
+      const res = await window.apiFetch('/api/mobile/dynamic/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -145,12 +145,12 @@ export default function MobileScanPanel({ configured, onScanStarted }) {
   const startDockerStack = async () => {
     setStartingStack(true);
     try {
-      const res = await fetch('/api/mobile/dynamic/start', { method: 'POST' });
+      const res = await window.apiFetch('/api/mobile/dynamic/start', { method: 'POST' });
       const data = await res.json();
       if (!res.ok) setError(data.error || 'Failed to start Docker stack');
       // Refresh status
       setTimeout(() => {
-        fetch('/api/mobile/dynamic/status').then(r => r.json()).then(setDynamicStatus).catch(() => {});
+        window.apiFetch('/api/mobile/dynamic/status').then(r => r.json()).then(setDynamicStatus).catch(() => {});
       }, 3000);
     } catch {
       setError('Failed to start Docker stack');
@@ -160,7 +160,7 @@ export default function MobileScanPanel({ configured, onScanStarted }) {
 
   const stopDockerStack = async () => {
     try {
-      await fetch('/api/mobile/dynamic/stop', { method: 'POST' });
+      await window.apiFetch('/api/mobile/dynamic/stop', { method: 'POST' });
       setDynamicStatus(null);
     } catch {}
   };

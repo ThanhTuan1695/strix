@@ -7,13 +7,13 @@ export default function ScanHistory({ onLoadFindings }) {
   const [loading, setLoading] = useState(null);
 
   useEffect(() => {
-    fetch('/api/runs').then(r => r.json()).then(setRuns);
-    fetch('/api/scans').then(r => r.json()).then(setScans);
+    window.apiFetch('/api/runs').then(r => r.json()).then(setRuns);
+    window.apiFetch('/api/scans').then(r => r.json()).then(setScans);
   }, []);
 
   const loadFindings = async (runName) => {
     setLoading(runName);
-    const res = await fetch(`/api/runs/${runName}/findings`);
+    const res = await window.apiFetch(`/api/runs/${runName}/findings`);
     const findings = await res.json();
     onLoadFindings(findings);
     setLoading(null);
