@@ -28,6 +28,16 @@ COPY --from=strix-build /usr/local/lib/libpython3.12.so* /usr/local/lib/
 # Copy entire strix build dir (venv references /build for editable install)
 COPY --from=strix-build /build /opt/strix
 
+# Install Docker CLI (strix needs it to run scan containers)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*
+
 # Fix editable install path (was /build, now /opt/strix)
 RUN sed -i 's|/build|/opt/strix|g' /opt/strix/.venv/lib/python3.12/site-packages/_editable_impl_strix_agent.pth \
     && ldconfig \
