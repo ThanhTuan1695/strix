@@ -608,12 +608,49 @@ app.delete('/api/runs/:name/finding/:fid', async (req, res) => {
 
 // --- Report generation ---
 app.post('/api/report', async (req, res) => {
-  const { findings, meta } = req.body;
+  const { findings, meta, scanId } = req.body;
   if (!findings || !findings.length) return res.status(400).json({ error: 'No findings to generate report from' });
   try {
     const report = await generateReport(findings, meta || {});
-    res.json(report);
+    const reportDoc = {
+      id: `report-${Date.now()}`,
+      scanId: scanId || null,
+      report,
+      meta,
+      findingsCount: findings.length,
+      createdAt: new Date().toISOString(),
+      createdBy: req.user?.username || 'unknown',
+    };
+    const db = (await import('./db.js')).getDB();
+    if (db) {
+      await db.collection('reports').createIndex({ id: 1 }, { unique: true }).catch(() => {});
+      await db.collection('reports').updateOne({ id: reportDoc.id }, { $set: reportDoc }, { upsert: true });
+    }
+    res.json({ ...report, reportId: reportDoc.id });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/reports', async (_req, res) => {
+  const db = (await import('./db.js')).getDB();
+  if (!db) return res.json([]);
+  const reports = await db.collection('reports').find({}, { projection: { report: 0 } })
+    .sort({ createdAt: -1 }).limit(50).toArray();
+  res.json(reports);
+});
+
+app.get('/api/report/:id', async (req, res) => {
+  const db = (await import('./db.js')).getDB();
+  if (!db) return res.status(503).json({ error: 'Database not available' });
+  const doc = await db.collection('reports').findOne({ id: req.params.id });
+  if (!doc) return res.status(404).json({ error: 'Report not found' });
+  res.json(doc);
+});
+
+app.delete('/api/report/:id', async (req, res) => {
+  const db = (await import('./db.js')).getDB();
+  if (!db) return res.status(503).json({ error: 'Database not available' });
+  await db.collection('reports').deleteOne({ id: req.params.id });
+  res.json({ success: true });
 });
 
 async function generateReport(findings, meta) {

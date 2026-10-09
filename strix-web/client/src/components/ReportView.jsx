@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import './Report.css';
 
 const SEVERITY_COLORS = { Critical: '#ff4757', High: '#ff6b35', Medium: '#ffa502', Low: '#2ed573', Info: '#70a1ff' };
@@ -12,7 +12,7 @@ const FILL_TYPES = [
   { value: 'custom', label: 'Custom text' },
 ];
 
-export default function ReportView({ findings, meta }) {
+export default function ReportView({ findings, meta, scanId }) {
   const [mode, setMode] = useState('quick');
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -26,6 +26,41 @@ export default function ReportView({ findings, meta }) {
   const [selectedFindings, setSelectedFindings] = useState([]);
   const [uploading, setUploading] = useState(false);
 
+  // Saved reports
+  const [savedReports, setSavedReports] = useState([]);
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [viewMode, setViewMode] = useState(findings.length ? 'generate' : 'history');
+
+  useEffect(() => { loadSavedReports(); }, []);
+
+  const loadSavedReports = async () => {
+    setLoadingReports(true);
+    try {
+      const res = await window.apiFetch('/api/reports');
+      if (res.ok) setSavedReports(await res.json());
+    } catch {}
+    setLoadingReports(false);
+  };
+
+  const loadSavedReport = async (id) => {
+    setLoading(true);
+    try {
+      const res = await window.apiFetch(`/api/report/${id}`);
+      if (!res.ok) throw new Error('Report not found');
+      const doc = await res.json();
+      setReport(doc.report);
+      setViewMode('generate');
+    } catch (e) { setError(e.message); }
+    setLoading(false);
+  };
+
+  const deleteSavedReport = async (id) => {
+    try {
+      await window.apiFetch(`/api/report/${id}`, { method: 'DELETE' });
+      setSavedReports(prev => prev.filter(r => r.id !== id));
+    } catch {}
+  };
+
   // --- Quick report ---
   const generateReport = async () => {
     setLoading(true);
@@ -37,10 +72,13 @@ export default function ReportView({ findings, meta }) {
         body: JSON.stringify({
           findings: selectedFindings.length ? findings.filter((_, i) => selectedFindings.includes(i)) : findings,
           meta: { ...meta, clientName: clientName || 'Target Organization', targetName: targetName || meta.targets?.join(', ') || 'Target Application' },
+          scanId: scanId || null,
         }),
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
-      setReport(await res.json());
+      const data = await res.json();
+      setReport(data);
+      loadSavedReports();
     } catch (e) { setError(e.message); }
     setLoading(false);
   };
@@ -119,12 +157,42 @@ export default function ReportView({ findings, meta }) {
     else setSelectedFindings(findings.map((_, i) => i));
   };
 
-  // --- Empty state ---
+  // --- Saved reports list ---
+  const renderSavedReports = () => (
+    <div className="saved-reports">
+      <div className="sr-header">
+        <h3>Saved Reports</h3>
+        <button className="btn-link" onClick={loadSavedReports}>{loadingReports ? 'Loading...' : 'Refresh'}</button>
+      </div>
+      {!savedReports.length ? (
+        <p className="sr-empty">No saved reports yet.</p>
+      ) : (
+        <div className="sr-list">
+          {savedReports.map(r => (
+            <div key={r.id} className="sr-item">
+              <div className="sr-info">
+                <span className="sr-date">{new Date(r.createdAt).toLocaleString()}</span>
+                <span className="sr-meta">{r.findingsCount} findings &middot; by {r.createdBy}</span>
+                {r.scanId && <span className="sr-scan">Scan: {r.scanId}</span>}
+              </div>
+              <div className="sr-actions">
+                <button className="btn-sm" onClick={() => loadSavedReport(r.id)}>View</button>
+                <button className="btn-sm btn-danger" onClick={() => deleteSavedReport(r.id)}>Delete</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  // --- Empty state (no findings but may have saved reports) ---
   if (!findings.length) {
     return (
       <div className="panel">
         <div className="panel-header"><h2>Report</h2></div>
-        <div className="empty-state"><p>No findings available. Complete a scan first.</p></div>
+        {report ? null : renderSavedReports()}
+        {!report && !savedReports.length && <div className="empty-state"><p>No findings available. Complete a scan first.</p></div>}
       </div>
     );
   }
@@ -137,7 +205,9 @@ export default function ReportView({ findings, meta }) {
         <div className="report-actions">
           <button className="btn-primary" onClick={handlePrint}>Print / Save PDF</button>
           <button className="btn-secondary" onClick={handleDownloadHTML}>Download HTML</button>
-          <button className="btn-secondary" onClick={() => setReport(null)}>Edit Settings</button>
+          <button className="btn-secondary" onClick={() => setReport(null)}>
+            {findings.length ? 'Edit Settings' : 'Back'}
+          </button>
         </div>
         <div className="report-document" id="pentest-report">
           <section className="report-cover">
@@ -235,8 +305,19 @@ export default function ReportView({ findings, meta }) {
   // --- Setup form ---
   return (
     <div className="panel report-setup">
-      <div className="panel-header"><h2>Generate Report</h2></div>
+      <div className="panel-header">
+        <h2>Report</h2>
+        <div className="report-view-tabs">
+          <button className={`rmt ${viewMode === 'generate' ? 'active' : ''}`} onClick={() => setViewMode('generate')}>Generate New</button>
+          <button className={`rmt ${viewMode === 'history' ? 'active' : ''}`} onClick={() => setViewMode('history')}>
+            Saved Reports{savedReports.length ? ` (${savedReports.length})` : ''}
+          </button>
+        </div>
+      </div>
 
+      {viewMode === 'history' && renderSavedReports()}
+
+      {viewMode === 'generate' && <>
       {/* Mode tabs */}
       <div className="report-mode-tabs">
         <button className={`rmt ${mode === 'quick' ? 'active' : ''}`} onClick={() => setMode('quick')}>Quick Report</button>
@@ -337,6 +418,7 @@ export default function ReportView({ findings, meta }) {
           )}
         </div>
       )}
+      </>}
     </div>
   );
 }

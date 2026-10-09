@@ -79,7 +79,7 @@ export default function App() {
     { id: 'mobile', label: 'Mobile', icon: '📱' },
     { id: 'scans', label: 'Scan Manager', icon: '📡' },
     { id: 'findings', label: `Findings${totalFindings ? ` (${totalFindings})` : ''}`, icon: '🎯' },
-    { id: 'report', label: 'Report', icon: '📄', disabled: !currentFindings.length },
+    { id: 'report', label: 'Report', icon: '📄' },
     ...(isAdmin ? [{ id: 'admin', label: 'Admin', icon: '⚙️' }] : []),
   ];
 
@@ -174,7 +174,7 @@ export default function App() {
           />
         )}
         {activeTab === 'report' && (
-          <ReportView findings={currentFindings} meta={scanMeta} />
+          <ReportView findings={currentFindings} meta={scanMeta} scanId={viewingScanId} />
         )}
         {activeTab === 'admin' && isAdmin && (
           <div className="admin-page">
