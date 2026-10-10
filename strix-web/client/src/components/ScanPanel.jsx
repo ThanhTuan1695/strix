@@ -7,7 +7,7 @@ export default function ScanPanel({ configured, onScanStarted }) {
   const [scanMode, setScanMode] = useState('deep');
   const [scopeMode, setScopeMode] = useState('auto');
   const [testingType, setTestingType] = useState('blackbox');
-  const [credentials, setCredentials] = useState('');
+  const [credentialsList, setCredentialsList] = useState([{ role: '', value: '' }]);
   const [instruction, setInstruction] = useState('');
   const [maxBudget, setMaxBudget] = useState('');
   const [maxTurns, setMaxTurns] = useState('');
@@ -76,7 +76,7 @@ export default function ScanPanel({ configured, onScanStarted }) {
         body: JSON.stringify({
           targets: targets.filter(Boolean),
           scanMode, scopeMode, testingType,
-          credentials: credentials || undefined,
+          credentials: credentialsList.some(c => c.value) ? credentialsList.filter(c => c.value).map(c => c.role ? `${c.role}: ${c.value}` : c.value).join('\n') : undefined,
           instruction: instruction || undefined,
           maxBudget: maxBudget ? Number(maxBudget) : undefined,
           maxTurns: maxTurns ? Number(maxTurns) : undefined,
@@ -177,9 +177,21 @@ export default function ScanPanel({ configured, onScanStarted }) {
       {testingType !== 'blackbox' && (
         <div className="field">
           <label>Test Credentials</label>
-          <input value={credentials} onChange={e => setCredentials(e.target.value)}
-            placeholder="username:password or token" type="password" />
-          <span className="hint">Credentials for authenticated testing</span>
+          {credentialsList.map((cred, i) => (
+            <div key={i} className="cred-row">
+              <input className="cred-role" value={cred.role}
+                onChange={e => { const c = [...credentialsList]; c[i] = { ...c[i], role: e.target.value }; setCredentialsList(c); }}
+                placeholder="Role (e.g. admin)" />
+              <input className="cred-value" value={cred.value}
+                onChange={e => { const c = [...credentialsList]; c[i] = { ...c[i], value: e.target.value }; setCredentialsList(c); }}
+                placeholder="username:password or token" type="password" />
+              {credentialsList.length > 1 && (
+                <button className="btn-icon btn-remove" onClick={() => setCredentialsList(credentialsList.filter((_, idx) => idx !== i))}>×</button>
+              )}
+            </div>
+          ))}
+          <button className="btn-link" onClick={() => setCredentialsList([...credentialsList, { role: '', value: '' }])}>+ Add another role</button>
+          <span className="hint">Add credentials per role for privilege escalation testing</span>
         </div>
       )}
 

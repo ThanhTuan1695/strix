@@ -266,6 +266,17 @@
   color: var(--danger);
 }
 
+.cred-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.cred-role {
+  width: 130px;
+  flex-shrink: 0;
+}
+.cred-value { flex: 1; }
+
 .btn-link {
   background: transparent;
   color: var(--accent);
