@@ -237,7 +237,14 @@ app.post('/api/scan', async (req, res) => {
   const allInstructions = [];
   const testType = TESTING_TYPES.find(t => t.id === testingType);
   if (testType) allInstructions.push(testType.instruction);
-  if (credentials) allInstructions.push(`Use the following credentials: ${credentials}`);
+  if (credentials) {
+    const credLines = credentials.split('\n').filter(l => l.trim());
+    if (credLines.length > 1) {
+      allInstructions.push(`Multiple role-based credentials are provided for privilege escalation testing. Test each role and check for vertical/horizontal privilege escalation, IDOR, and unauthorized access between roles:\n${credentials}`);
+    } else {
+      allInstructions.push(`Use the following credentials: ${credentials}`);
+    }
+  }
   if (instruction) allInstructions.push(instruction);
   if (allInstructions.length) args.push('--instruction', allInstructions.join(' '));
 
