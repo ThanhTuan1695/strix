@@ -22,6 +22,7 @@ services:
       - ./data/uploads:/app/uploads
       - ./data/mobile-uploads:/app/mobile-uploads
       - ./data/report-templates:/app/report-templates
+      - ./data/strix-config:/root/.strix
     depends_on:
       - mongo
 
