@@ -807,14 +807,16 @@ app.post('/api/report/template/upload', templateUpload.single('template'), async
   }
 });
 
-// Generate .docx from template + findings
+// Generate .docx from template — modify original, preserve formatting
 app.post('/api/report/template/generate', async (req, res) => {
   const { templateId, sections, findings, meta } = req.body;
   if (!sections || !findings) return res.status(400).json({ error: 'Missing sections or findings' });
 
+  const templatePath = join(TEMPLATE_DIR, templateId);
+  if (!existsSync(templatePath)) return res.status(404).json({ error: 'Template not found' });
+
   try {
-    const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell,
-      WidthType, BorderStyle, AlignmentType } = await import('docx');
+    const JSZip = (await import('jszip')).default;
 
     const severityOrder = { Critical: 0, High: 1, Medium: 2, Low: 3, Info: 4 };
     const sorted = [...findings].sort((a, b) => (severityOrder[a.severity] ?? 5) - (severityOrder[b.severity] ?? 5));
@@ -824,121 +826,128 @@ app.post('/api/report/template/generate', async (req, res) => {
     const findingsSummary = sorted.map((f, i) => `${i+1}. [${f.severity}] ${f.title}${f.cvss ? ` (CVSS ${f.cvss})` : ''}${f.cwe ? ` CWE-${f.cwe}` : ''}: ${(f.description || '').slice(0, 200)}`).join('\n');
     const contextBlock = `Client: ${meta?.clientName || 'Target Organization'}\nTarget: ${meta?.targetName || 'the target application'}\nTesting: ${meta?.testingType || 'Black Box'}\nTotal: ${sorted.length} findings (${Object.entries(severityCounts).filter(([,v])=>v>0).map(([k,v])=>`${v} ${k}`).join(', ')})\n\nFindings:\n${findingsSummary}`;
 
-    const docChildren = [];
-    const headingLevels = [HeadingLevel.HEADING_1, HeadingLevel.HEADING_2, HeadingLevel.HEADING_3];
-    const thinBorder = { style: BorderStyle.SINGLE, size: 1, color: '999999' };
-    const borders = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-
-    const addParagraphs = (text) => {
-      for (const line of text.split('\n').filter(Boolean)) {
-        docChildren.push(new Paragraph({ text: line, spacing: { after: 80 } }));
-      }
-    };
-
+    // Generate AI content for each section that needs filling
+    const sectionContent = {};
     for (const sec of sections) {
-      const hl = headingLevels[Math.min(sec.level - 1, 2)];
-      docChildren.push(new Paragraph({ text: sec.title, heading: hl, spacing: { before: 300, after: 120 } }));
+      if (!sec.fillType) continue;
+      let text = '';
 
       if (sec.fillType === 'executive_summary') {
-        const aiText = await callLLM([{
+        text = await callLLM([{
           role: 'system',
-          content: 'You are a senior penetration tester writing a professional executive summary for a pentest report. Write 2-3 formal paragraphs covering: engagement context, key statistics, most critical findings with business impact, overall security posture, and prioritized remediation guidance. Plain text only, no markdown.',
+          content: 'You are a senior penetration tester writing a professional executive summary. Write 2-3 formal paragraphs covering: engagement context, key statistics, critical findings with business impact, security posture, and remediation guidance. Plain text only, no markdown.',
         }, { role: 'user', content: contextBlock }], 1500);
-        addParagraphs(aiText);
 
       } else if (sec.fillType === 'findings_list') {
-        const aiText = await callLLM([{
+        text = await callLLM([{
           role: 'system',
-          content: 'You are a senior penetration tester. Write a concise findings overview list. For each finding, write one line: "Finding N: [Title] — [Severity] — [1-sentence summary of what the vulnerability is and its impact]". Plain text, no markdown. Sort by severity (Critical first).',
+          content: 'You are a senior penetration tester. Write a concise findings overview. For each finding: "N. [Title] — [Severity] — [1-sentence summary]". Plain text, no markdown. Sort by severity.',
         }, { role: 'user', content: contextBlock }], 1500);
-        addParagraphs(aiText);
 
       } else if (sec.fillType === 'findings_detail') {
+        const parts = [];
         for (let i = 0; i < sorted.length; i++) {
           const f = sorted[i];
-          docChildren.push(new Paragraph({
-            text: `Finding ${i + 1}: ${f.title}`,
-            heading: HeadingLevel.HEADING_3,
-            spacing: { before: 240, after: 80 },
-          }));
-          const metaRows = [
-            ['Severity', f.severity], ['CVSS', f.cvss || 'N/A'], ['CWE', f.cwe ? `CWE-${f.cwe}` : 'N/A'],
-            ['Affected Asset', f.affectedAsset || 'N/A'], ['Status', f.status || 'Open'],
-          ];
-          if (f.owaspCategory) metaRows.push(['OWASP', f.owaspCategory]);
-          docChildren.push(new Table({
-            width: { size: 100, type: WidthType.PERCENTAGE },
-            rows: metaRows.map(([k, v]) => new TableRow({
-              children: [
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: k, bold: true, size: 20 })] })], borders, width: { size: 30, type: WidthType.PERCENTAGE } }),
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(v), size: 20 })] })], borders }),
-              ],
-            })),
-          }));
-
-          const aiDetail = await callLLM([{
+          const detail = await callLLM([{
             role: 'system',
-            content: 'You are a senior penetration tester writing a detailed finding for a professional report. Write sections: Observation (what was found, with evidence), Exploitability (attack scenario, impact), Measure (specific fix steps, references). Plain text, use section headers like "Observation:", "Exploitability:", "Measure:". Enhance existing data, be specific and technical.',
+            content: 'You are a senior penetration tester writing a finding for a professional report. Write: Observation (evidence+request), Exploitability (attack scenario), Measure (fix+references). Use headers "Observation:", "Exploitability:", "Measure:". Plain text, no markdown.',
           }, {
             role: 'user',
-            content: `Finding: ${f.title}\nSeverity: ${f.severity}${f.cvss ? `, CVSS ${f.cvss}` : ''}${f.cwe ? `, CWE-${f.cwe}` : ''}\nAsset: ${f.affectedAsset || 'N/A'}\nDescription: ${f.description || 'None'}\nImpact: ${f.impact || 'None'}\nRemediation: ${f.remediationSteps || f.remediation || 'None'}\nEvidence: ${f.evidence?.detail?.slice(0, 500) || 'N/A'}\nRequest: ${f.evidence?.request?.slice(0, 500) || 'N/A'}\nPoC steps: ${f.evidence?.steps?.join('; ')?.slice(0, 300) || 'N/A'}`,
+            content: `Finding ${i+1}: ${f.title}\nSeverity: ${f.severity}${f.cvss ? `, CVSS ${f.cvss}` : ''}${f.cwe ? `, CWE-${f.cwe}` : ''}\nAsset: ${f.affectedAsset || 'N/A'}\nDescription: ${f.description || 'None'}\nImpact: ${f.impact || 'None'}\nRemediation: ${f.remediationSteps || f.remediation || 'None'}\nEvidence: ${f.evidence?.detail?.slice(0, 500) || 'N/A'}`,
           }], 1000).catch(() => '');
-          if (aiDetail) addParagraphs(aiDetail);
-
-          if (f.evidence?.request) {
-            docChildren.push(new Paragraph({ children: [new TextRun({ text: 'Request:', bold: true, size: 18 })], spacing: { before: 120 } }));
-            docChildren.push(new Paragraph({ children: [new TextRun({ text: f.evidence.request, font: 'Courier New', size: 16 })], spacing: { after: 40 } }));
-          }
-          if (f.evidence?.response) {
-            docChildren.push(new Paragraph({ children: [new TextRun({ text: 'Response:', bold: true, size: 18 })], spacing: { before: 80 } }));
-            docChildren.push(new Paragraph({ children: [new TextRun({ text: f.evidence.response.slice(0, 2000), font: 'Courier New', size: 16 })], spacing: { after: 40 } }));
-          }
+          parts.push(`Finding ${i+1}: ${f.title} [${f.severity}]${f.cvss ? ` CVSS ${f.cvss}` : ''}\n${detail}`);
         }
+        text = parts.join('\n\n');
 
       } else if (sec.fillType === 'findings_table') {
-        const headerRow = new TableRow({
-          children: ['#', 'Finding', 'Severity', 'CVSS', 'Status'].map(h =>
-            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, size: 20, color: 'FFFFFF' })] })], borders, shading: { fill: '333333' } })
-          ),
-        });
-        const dataRows = sorted.map((f, i) => new TableRow({
-          children: [
-            new TableCell({ children: [new Paragraph({ text: String(i + 1), alignment: AlignmentType.CENTER })], borders }),
-            new TableCell({ children: [new Paragraph({ text: f.title })], borders }),
-            new TableCell({ children: [new Paragraph({ text: f.severity })], borders }),
-            new TableCell({ children: [new Paragraph({ text: f.cvss || 'N/A' })], borders }),
-            new TableCell({ children: [new Paragraph({ text: f.status || 'Open' })], borders }),
-          ],
-        }));
-        docChildren.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows] }));
+        const header = '#\tFinding\tSeverity\tCVSS\tStatus';
+        const rows = sorted.map((f, i) => `${i+1}\t${f.title}\t${f.severity}\t${f.cvss || 'N/A'}\t${f.status || 'Open'}`);
+        text = header + '\n' + rows.join('\n');
 
       } else if (sec.fillType === 'remediation') {
-        const aiText = await callLLM([{
+        text = await callLLM([{
           role: 'system',
-          content: 'You are a senior penetration tester writing a remediation roadmap for a professional report. Create a prioritized action plan grouped by urgency: Immediate (Critical, 7 days), Short-term (High, 14 days), Medium-term (Medium, 60 days), Long-term (Low/Info, 90 days). For each finding, write: the finding name, what to fix, and a concrete remediation step. Plain text, no markdown tables.',
+          content: 'You are a senior penetration tester writing a remediation roadmap. Group by urgency: Immediate (Critical, 7d), Short-term (High, 14d), Medium-term (Medium, 60d), Long-term (Low/Info, 90d). For each: finding name, what to fix, concrete step. Plain text, no markdown.',
         }, { role: 'user', content: contextBlock }], 1500);
-        addParagraphs(aiText);
 
-      } else if (sec.fillType === 'custom' && sec.customContent) {
-        addParagraphs(sec.customContent);
-
-      } else if (sec.content) {
-        addParagraphs(sec.content);
+      } else if (sec.fillType === 'custom') {
+        text = sec.customContent || '';
       }
+
+      if (text) sectionContent[sec.id] = text;
     }
 
-    const doc = new Document({
-      sections: [{ children: docChildren }],
-      styles: { default: { document: { run: { size: 22, font: 'Calibri' } } } },
-    });
+    // Open original .docx, modify XML, preserve everything else
+    const raw = await readFile(templatePath);
+    const zip = await JSZip.loadAsync(raw);
+    const docXml = await zip.file('word/document.xml').async('string');
 
-    const buffer = await Packer.toBuffer(doc);
+    // Parse paragraphs: find headings and content between them
+    const paraRegex = /<w:p[ >][\s\S]*?<\/w:p>/g;
+    const headingStyleRegex = /<w:pStyle\s+w:val="Heading(\d)"/i;
+    const textRegex = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
+
+    const paras = [];
+    let m;
+    while ((m = paraRegex.exec(docXml)) !== null) {
+      const xml = m[0];
+      const start = m.index;
+      const end = start + xml.length;
+      const headingMatch = xml.match(headingStyleRegex);
+      let text = '';
+      let tm;
+      const tReg = new RegExp(textRegex.source, 'g');
+      while ((tm = tReg.exec(xml)) !== null) text += tm[1];
+      paras.push({ xml, start, end, heading: headingMatch ? parseInt(headingMatch[1]) : 0, text: text.trim() });
+    }
+
+    // Map template sections to heading positions by matching title text
+    const sectionRanges = [];
+    for (const sec of sections) {
+      if (!sectionContent[sec.id]) continue;
+      const idx = paras.findIndex(p => p.heading > 0 && p.text.replace(/\s+/g, ' ').trim().toLowerCase() === sec.title.replace(/\s+/g, ' ').trim().toLowerCase());
+      if (idx < 0) continue;
+      // Content = paragraphs after this heading until next heading of same or higher level
+      let endIdx = idx + 1;
+      while (endIdx < paras.length && (paras[endIdx].heading === 0 || paras[endIdx].heading > paras[idx].heading)) endIdx++;
+      sectionRanges.push({ secId: sec.id, headingIdx: idx, contentStart: idx + 1, contentEnd: endIdx });
+    }
+
+    // Build new XML by replacing content sections (work backwards to preserve offsets)
+    let newDocXml = docXml;
+    sectionRanges.sort((a, b) => b.contentStart - a.contentStart);
+
+    // Get a sample normal paragraph's rPr (run properties) for style inheritance
+    const normalRprMatch = docXml.match(/<w:p[ >](?:(?!<w:pStyle).)*?<w:rPr>([\s\S]*?)<\/w:rPr>/);
+    const inheritedRpr = normalRprMatch ? `<w:rPr>${normalRprMatch[1]}</w:rPr>` : '';
+
+    for (const range of sectionRanges) {
+      if (range.contentStart >= range.contentEnd) continue;
+      const text = sectionContent[range.secId];
+      if (!text) continue;
+
+      const replaceStart = paras[range.contentStart].start;
+      const replaceEnd = paras[range.contentEnd - 1].end;
+
+      // Build replacement paragraphs using template's normal style
+      const newParas = text.split('\n').filter(l => l.trim()).map(line => {
+        const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `<w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r>${inheritedRpr}<w:t xml:space="preserve">${escaped}</w:t></w:r></w:p>`;
+      }).join('');
+
+      newDocXml = newDocXml.slice(0, replaceStart) + newParas + newDocXml.slice(replaceEnd);
+    }
+
+    zip.file('word/document.xml', newDocXml);
+    const outBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+
     const outName = `report-${Date.now()}.docx`;
     const outPath = join(TEMPLATE_DIR, outName);
-    await writeFile(outPath, buffer);
+    await writeFile(outPath, outBuffer);
 
     res.json({ downloadUrl: `/api/report/template/download/${outName}` });
   } catch (e) {
+    console.error('Template generate error:', e);
     res.status(500).json({ error: e.message });
   }
 });
