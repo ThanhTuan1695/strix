@@ -876,6 +876,31 @@ app.post('/api/report/template/generate', async (req, res) => {
       });
     };
 
+    // Replace table cell value by finding the label cell, then replacing content in the next cell
+    const replaceCellByLabel = (blockXml, label, newValue) => {
+      const tcRe = /<w:tc[ >][\s\S]*?<\/w:tc>/g;
+      const tRe = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
+      const cells = [];
+      let cm;
+      while ((cm = tcRe.exec(blockXml)) !== null) {
+        const ts = [];
+        let tm3;
+        while ((tm3 = tRe.exec(cm[0])) !== null) ts.push(tm3[1]);
+        cells.push({ start: cm.index, end: cm.index + cm[0].length, text: ts.join('').trim(), xml: cm[0] });
+      }
+      for (let ci = 0; ci < cells.length - 1; ci++) {
+        if (cells[ci].text.toLowerCase().includes(label.toLowerCase())) {
+          const valCell = cells[ci + 1];
+          const firstT = valCell.xml.match(/<w:t[^>]*>[^<]*<\/w:t>/);
+          if (!firstT) continue;
+          const newT = firstT[0].replace(/(<w:t[^>]*>)[^<]*(<\/w:t>)/, `$1${escXml(newValue)}$2`);
+          const newCellXml = valCell.xml.replace(firstT[0], newT);
+          return blockXml.slice(0, valCell.start) + newCellXml + blockXml.slice(valCell.end);
+        }
+      }
+      return blockXml;
+    };
+
     const replaceH3Content = (blockXml, h3Title, newContent) => {
       const blockParas = [];
       let bm;
@@ -938,6 +963,8 @@ app.post('/api/report/template/generate', async (req, res) => {
       block = replaceXmlText(block, '[CLOSED / OPEN / RISK ACCEPTED]', f.status || 'Open');
       block = replaceXmlText(block, '[FIXED / PARTIALLY FIXED / NOT FIXED / UNABLE TO VERIFY]', 'Not Fixed');
       block = replaceXmlText(block, '[CRITICAL / HIGH / MEDIUM / LOW]', sevFromCvss);
+      // Initial Severity cell uses a single "c" placeholder — replace by label position
+      block = replaceCellByLabel(block, 'Initial Severity', sevFromCvss);
 
       // H3 content replacements
       block = replaceH3Content(block, 'Observation', f.description || 'No description available.');
