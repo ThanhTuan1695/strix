@@ -826,58 +826,7 @@ app.post('/api/report/template/generate', async (req, res) => {
     const findingsSummary = sorted.map((f, i) => `${i+1}. [${f.severity}] ${f.title}${f.cvss ? ` (CVSS ${f.cvss})` : ''}${f.cwe ? ` CWE-${f.cwe}` : ''}: ${(f.description || '').slice(0, 200)}`).join('\n');
     const contextBlock = `Client: ${meta?.clientName || 'Target Organization'}\nTarget: ${meta?.targetName || 'the target application'}\nTesting: ${meta?.testingType || 'Black Box'}\nTotal: ${sorted.length} findings (${Object.entries(severityCounts).filter(([,v])=>v>0).map(([k,v])=>`${v} ${k}`).join(', ')})\n\nFindings:\n${findingsSummary}`;
 
-    // Generate AI content for each section that needs filling
-    const sectionContent = {};
-    for (const sec of sections) {
-      if (!sec.fillType) continue;
-      let text = '';
-
-      if (sec.fillType === 'executive_summary') {
-        text = await callLLM([{
-          role: 'system',
-          content: 'You are a senior penetration tester writing a professional executive summary. Write 2-3 formal paragraphs covering: engagement context, key statistics, critical findings with business impact, security posture, and remediation guidance. Plain text only, no markdown.',
-        }, { role: 'user', content: contextBlock }], 1500);
-
-      } else if (sec.fillType === 'findings_list') {
-        text = await callLLM([{
-          role: 'system',
-          content: 'You are a senior penetration tester. Write a concise findings overview. For each finding: "N. [Title] — [Severity] — [1-sentence summary]". Plain text, no markdown. Sort by severity.',
-        }, { role: 'user', content: contextBlock }], 1500);
-
-      } else if (sec.fillType === 'findings_detail') {
-        const parts = [];
-        for (let i = 0; i < sorted.length; i++) {
-          const f = sorted[i];
-          const detail = await callLLM([{
-            role: 'system',
-            content: 'You are a senior penetration tester writing a finding for a professional report. Write: Observation (evidence+request), Exploitability (attack scenario), Measure (fix+references). Use headers "Observation:", "Exploitability:", "Measure:". Plain text, no markdown.',
-          }, {
-            role: 'user',
-            content: `Finding ${i+1}: ${f.title}\nSeverity: ${f.severity}${f.cvss ? `, CVSS ${f.cvss}` : ''}${f.cwe ? `, CWE-${f.cwe}` : ''}\nAsset: ${f.affectedAsset || 'N/A'}\nDescription: ${f.description || 'None'}\nImpact: ${f.impact || 'None'}\nRemediation: ${f.remediationSteps || f.remediation || 'None'}\nEvidence: ${f.evidence?.detail?.slice(0, 500) || 'N/A'}`,
-          }], 1000).catch(() => '');
-          parts.push(`Finding ${i+1}: ${f.title} [${f.severity}]${f.cvss ? ` CVSS ${f.cvss}` : ''}\n${detail}`);
-        }
-        text = parts.join('\n\n');
-
-      } else if (sec.fillType === 'findings_table') {
-        const header = '#\tFinding\tSeverity\tCVSS\tStatus';
-        const rows = sorted.map((f, i) => `${i+1}\t${f.title}\t${f.severity}\t${f.cvss || 'N/A'}\t${f.status || 'Open'}`);
-        text = header + '\n' + rows.join('\n');
-
-      } else if (sec.fillType === 'remediation') {
-        text = await callLLM([{
-          role: 'system',
-          content: 'You are a senior penetration tester writing a remediation roadmap. Group by urgency: Immediate (Critical, 7d), Short-term (High, 14d), Medium-term (Medium, 60d), Long-term (Low/Info, 90d). For each: finding name, what to fix, concrete step. Plain text, no markdown.',
-        }, { role: 'user', content: contextBlock }], 1500);
-
-      } else if (sec.fillType === 'custom') {
-        text = sec.customContent || '';
-      }
-
-      if (text) sectionContent[sec.id] = text;
-    }
-
-    // Open original .docx, modify XML, preserve everything else
+    // Open original .docx and parse structure FIRST to extract existing content as format reference
     const raw = await readFile(templatePath);
     const zip = await JSZip.loadAsync(raw);
     const docXml = await zip.file('word/document.xml').async('string');
@@ -885,7 +834,6 @@ app.post('/api/report/template/generate', async (req, res) => {
     // Parse paragraphs: find headings and content between them
     const paraRegex = /<w:p[ >][\s\S]*?<\/w:p>/g;
     const headingStyleRegex = /<w:pStyle\s+w:val="Heading(\d)"/i;
-    const textRegex = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
 
     const paras = [];
     let m;
@@ -896,30 +844,78 @@ app.post('/api/report/template/generate', async (req, res) => {
       const headingMatch = xml.match(headingStyleRegex);
       let text = '';
       let tm;
-      const tReg = new RegExp(textRegex.source, 'g');
+      const tReg = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
       while ((tm = tReg.exec(xml)) !== null) text += tm[1];
       paras.push({ xml, start, end, heading: headingMatch ? parseInt(headingMatch[1]) : 0, text: text.trim() });
     }
 
-    // Map template sections to heading positions by matching title text
+    const findSectionRange = (title) => {
+      const norm = title.replace(/\s+/g, ' ').trim().toLowerCase();
+      const idx = paras.findIndex(p => p.heading > 0 && p.text.replace(/\s+/g, ' ').trim().toLowerCase() === norm);
+      if (idx < 0) return null;
+      let endIdx = idx + 1;
+      while (endIdx < paras.length && (paras[endIdx].heading === 0 || paras[endIdx].heading > paras[idx].heading)) endIdx++;
+      return { idx, endIdx };
+    };
+
+    // Extract existing content from template for each section (used as format reference)
+    const existingContent = {};
+    for (const sec of sections) {
+      const range = findSectionRange(sec.title);
+      if (!range) continue;
+      existingContent[sec.id] = paras.slice(range.idx + 1, range.endIdx).map(p => p.text).filter(Boolean).join('\n');
+    }
+
+    // Generate AI content only for conclusion and finding_detail sections
+    const stripInvalidXmlChars = (s) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+    const sectionContent = {};
+
+    for (const sec of sections) {
+      if (!sec.fillType) continue;
+      let text = '';
+
+      if (sec.fillType === 'conclusion') {
+        const formatRef = existingContent[sec.id] || '';
+        const formatInstruction = formatRef
+          ? `Here is the existing conclusion from the template — follow this EXACT writing style, tone, and structure:\n---\n${formatRef.slice(0, 2000)}\n---\nRewrite it for the NEW findings below. Keep the same format and level of detail.`
+          : 'Write a professional conclusion/summary for a penetration test report. Cover key findings, overall security posture, and high-level recommendations.';
+        text = await callLLM([
+          { role: 'system', content: 'You are a senior penetration tester writing the conclusion/summary section of a pentest report. Write plain text only, no markdown formatting. Match the style of the reference text exactly.' },
+          { role: 'user', content: `${formatInstruction}\n\n${contextBlock}` },
+        ], 2000);
+
+      } else if (sec.fillType === 'finding_detail') {
+        const formatRef = existingContent[sec.id] || '';
+        const formatInstruction = formatRef
+          ? `Here is an example finding from the template — follow this EXACT writing style, structure, and section headers:\n---\n${formatRef.slice(0, 3000)}\n---\nWrite EACH new finding below using this same format.`
+          : 'Write each finding with: Description, Impact, Remediation, and Evidence sections.';
+        const parts = [];
+        for (let i = 0; i < sorted.length; i++) {
+          const f = sorted[i];
+          const detail = await callLLM([
+            { role: 'system', content: `You are a senior penetration tester writing a finding for a professional pentest report. Write plain text only, no markdown. ${formatInstruction}` },
+            { role: 'user', content: `Finding ${i+1}: ${f.title}\nSeverity: ${f.severity}${f.cvss ? `, CVSS ${f.cvss}` : ''}${f.cwe ? `, CWE-${f.cwe}` : ''}\nAsset: ${f.affectedAsset || 'N/A'}\nDescription: ${f.description || 'None'}\nImpact: ${f.impact || 'None'}\nRemediation: ${f.remediationSteps || f.remediation || 'None'}\nEvidence: ${f.evidence?.detail?.slice(0, 500) || 'N/A'}` },
+          ], 1200).catch(() => '');
+          parts.push(`Finding ${i+1}: ${f.title} [${f.severity}]${f.cvss ? ` CVSS ${f.cvss}` : ''}\n${detail}`);
+        }
+        text = parts.join('\n\n');
+      }
+
+      if (text) sectionContent[sec.id] = text;
+    }
+
+    // Map sections with generated content to heading positions
     const sectionRanges = [];
     for (const sec of sections) {
       if (!sectionContent[sec.id]) continue;
-      const idx = paras.findIndex(p => p.heading > 0 && p.text.replace(/\s+/g, ' ').trim().toLowerCase() === sec.title.replace(/\s+/g, ' ').trim().toLowerCase());
-      if (idx < 0) continue;
-      // Content = paragraphs after this heading until next heading of same or higher level
-      let endIdx = idx + 1;
-      while (endIdx < paras.length && (paras[endIdx].heading === 0 || paras[endIdx].heading > paras[idx].heading)) endIdx++;
-      sectionRanges.push({ secId: sec.id, headingIdx: idx, contentStart: idx + 1, contentEnd: endIdx });
+      const range = findSectionRange(sec.title);
+      if (!range) continue;
+      sectionRanges.push({ secId: sec.id, contentStart: range.idx + 1, contentEnd: range.endIdx });
     }
 
     // Build new XML by replacing content sections (work backwards to preserve offsets)
     let newDocXml = docXml;
     sectionRanges.sort((a, b) => b.contentStart - a.contentStart);
-
-    // Get a sample normal paragraph's rPr (run properties) for style inheritance
-    const normalRprMatch = docXml.match(/<w:p[ >](?:(?!<w:pStyle).)*?<w:rPr>([\s\S]*?)<\/w:rPr>/);
-    const inheritedRpr = normalRprMatch ? `<w:rPr>${normalRprMatch[1]}</w:rPr>` : '';
 
     for (const range of sectionRanges) {
       if (range.contentStart >= range.contentEnd) continue;
@@ -929,37 +925,27 @@ app.post('/api/report/template/generate', async (req, res) => {
       const replaceStart = paras[range.contentStart].start;
       const replaceEnd = paras[range.contentEnd - 1].end;
 
-      // Build replacement paragraphs using template's normal style
-      const newParas = text.split('\n').filter(l => l.trim()).map(line => {
-        const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        return `<w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r>${inheritedRpr}<w:t xml:space="preserve">${escaped}</w:t></w:r></w:p>`;
+      const newParas = stripInvalidXmlChars(text).split('\n').filter(l => l.trim()).map(line => {
+        const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        return `<w:p><w:r><w:t xml:space="preserve">${escaped}</w:t></w:r></w:p>`;
       }).join('');
 
       newDocXml = newDocXml.slice(0, replaceStart) + newParas + newDocXml.slice(replaceEnd);
     }
 
     zip.file('word/document.xml', newDocXml);
-    const outBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const outBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
 
     const outName = `report-${Date.now()}.docx`;
     const outPath = join(TEMPLATE_DIR, outName);
     await writeFile(outPath, outBuffer);
 
-    // Build preview: extract original content from parsed XML for kept sections
-    const originalContent = {};
-    for (const sec of sections) {
-      const idx = paras.findIndex(p => p.heading > 0 && p.text.replace(/\s+/g, ' ').trim().toLowerCase() === sec.title.replace(/\s+/g, ' ').trim().toLowerCase());
-      if (idx < 0) continue;
-      let endIdx = idx + 1;
-      while (endIdx < paras.length && (paras[endIdx].heading === 0 || paras[endIdx].heading > paras[idx].heading)) endIdx++;
-      originalContent[sec.id] = paras.slice(idx + 1, endIdx).map(p => p.text).filter(Boolean).join('\n');
-    }
     const preview = sections.map(sec => ({
       id: sec.id,
       title: sec.title,
       level: sec.level,
       fillType: sec.fillType || 'keep_original',
-      content: sectionContent[sec.id] || originalContent[sec.id] || '',
+      content: sectionContent[sec.id] || existingContent[sec.id] || '',
     }));
 
     res.json({ downloadUrl: `/api/report/template/download/${outName}`, preview });
@@ -972,7 +958,9 @@ app.post('/api/report/template/generate', async (req, res) => {
 app.get('/api/report/template/download/:name', async (req, res) => {
   const filePath = join(TEMPLATE_DIR, req.params.name);
   if (!existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
-  res.download(filePath, req.params.name);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.setHeader('Content-Disposition', `attachment; filename="${req.params.name}"`);
+  res.download(filePath);
 });
 
 // --- Mobile Pentest ---

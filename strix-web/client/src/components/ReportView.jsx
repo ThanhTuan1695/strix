@@ -4,12 +4,8 @@ import './Report.css';
 const SEVERITY_COLORS = { Critical: '#ff4757', High: '#ff6b35', Medium: '#ffa502', Low: '#2ed573', Info: '#70a1ff' };
 const FILL_TYPES = [
   { value: '', label: 'Keep original' },
-  { value: 'executive_summary', label: 'AI: Executive Summary' },
-  { value: 'findings_list', label: 'AI: Findings List' },
-  { value: 'findings_detail', label: 'AI: Detailed Findings' },
-  { value: 'findings_table', label: 'AI: Findings Table' },
-  { value: 'remediation', label: 'AI: Remediation Roadmap' },
-  { value: 'custom', label: 'Custom text' },
+  { value: 'conclusion', label: 'AI: Conclusion / Summary' },
+  { value: 'finding_detail', label: 'AI: Finding Details' },
 ];
 
 export default function ReportView({ findings, meta, scanId }) {
@@ -156,8 +152,10 @@ export default function ReportView({ findings, meta, scanId }) {
       const a = document.createElement('a');
       a.href = url;
       a.download = 'report.docx';
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch (e) { setError(e.message); }
   };
 
@@ -407,7 +405,7 @@ export default function ReportView({ findings, meta, scanId }) {
                 {uploading ? 'Uploading...' : 'Upload .docx Template'}
                 <input type="file" accept=".docx" onChange={handleTemplateUpload} hidden disabled={uploading} />
               </label>
-              <p className="template-hint">Upload your company's report template. AI will read the structure and let you choose what to fill in each section.</p>
+              <p className="template-hint">Upload a previous report as template. AI will rewrite the Conclusion and Finding Details sections using your template's format.</p>
             </div>
           ) : (
             <>
@@ -418,7 +416,7 @@ export default function ReportView({ findings, meta, scanId }) {
 
               <div className="template-sections">
                 <h3>Template Sections</h3>
-                <p className="template-hint">For each section, choose what AI should fill in — or keep the original content.</p>
+                <p className="template-hint">Mark which sections are Conclusion/Summary and which are Finding Details. Everything else stays as-is.</p>
                 {templateSections.map(sec => (
                   <div key={sec.id} className="ts-item">
                     <div className="ts-header">
@@ -431,15 +429,6 @@ export default function ReportView({ findings, meta, scanId }) {
                       <select value={sec.fillType} onChange={e => updateSection(sec.id, 'fillType', e.target.value)}>
                         {FILL_TYPES.map(ft => <option key={ft.value} value={ft.value}>{ft.label}</option>)}
                       </select>
-                      {sec.fillType === 'custom' && (
-                        <textarea
-                          className="ts-custom"
-                          value={sec.customContent}
-                          onChange={e => updateSection(sec.id, 'customContent', e.target.value)}
-                          placeholder="Enter custom content for this section..."
-                          rows={3}
-                        />
-                      )}
                     </div>
                   </div>
                 ))}
