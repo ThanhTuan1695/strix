@@ -138,10 +138,15 @@ export default function ReportView({ findings, meta, scanId }) {
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data = await res.json();
+      const dlRes = await window.apiFetch(data.downloadUrl);
+      if (!dlRes.ok) throw new Error('Download failed');
+      const blob = await dlRes.blob();
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = data.downloadUrl;
+      a.href = url;
       a.download = 'report.docx';
       a.click();
+      URL.revokeObjectURL(url);
     } catch (e) { setError(e.message); }
     setLoading(false);
   };
