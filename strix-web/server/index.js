@@ -866,7 +866,7 @@ app.post('/api/report/template/generate', async (req, res) => {
       existingContent[sec.id] = paras.slice(range.idx + 1, range.endIdx).map(p => p.text).filter(Boolean).join('\n');
     }
 
-    const stripInvalidXmlChars = (s) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+    const stripInvalidXmlChars = (s) => String(s ?? '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
     const escXml = (s) => stripInvalidXmlChars(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
     // Helper: replace text inside <w:t> elements matching a pattern
