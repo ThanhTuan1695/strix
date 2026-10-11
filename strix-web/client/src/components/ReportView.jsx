@@ -2,11 +2,6 @@ import React, { useState, useEffect } from 'react';
 import './Report.css';
 
 const SEVERITY_COLORS = { Critical: '#ff4757', High: '#ff6b35', Medium: '#ffa502', Low: '#2ed573', Info: '#70a1ff' };
-const FILL_TYPES = [
-  { value: '', label: 'Keep original' },
-  { value: 'conclusion', label: 'AI: Conclusion / Summary' },
-  { value: 'finding_detail', label: 'AI: Finding Details' },
-];
 
 export default function ReportView({ findings, meta, scanId }) {
   const [mode, setMode] = useState('quick');
@@ -18,10 +13,8 @@ export default function ReportView({ findings, meta, scanId }) {
 
   // Template state
   const [template, setTemplate] = useState(null);
-  const [templateSections, setTemplateSections] = useState([]);
   const [selectedFindings, setSelectedFindings] = useState([]);
   const [uploading, setUploading] = useState(false);
-  const [templatePreview, setTemplatePreview] = useState(null);
   const [templateDownloadUrl, setTemplateDownloadUrl] = useState(null);
 
   // Saved reports
@@ -108,13 +101,8 @@ export default function ReportView({ findings, meta, scanId }) {
       if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
       const data = await res.json();
       setTemplate(data);
-      setTemplateSections(data.sections.map(s => ({ ...s, fillType: '', customContent: '' })));
     } catch (e) { setError(e.message); }
     setUploading(false);
-  };
-
-  const updateSection = (id, field, value) => {
-    setTemplateSections(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
   };
 
   const generateFromTemplate = async () => {
@@ -129,14 +117,15 @@ export default function ReportView({ findings, meta, scanId }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           templateId: template.templateId,
-          sections: templateSections,
           findings: usedFindings,
           meta: { ...meta, clientName, targetName: targetName || meta.targets?.join(', ') || 'Target Application' },
         }),
       });
-      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Server error ${res.status}`);
+      }
       const data = await res.json();
-      setTemplatePreview(data.preview);
       setTemplateDownloadUrl(data.downloadUrl);
     } catch (e) { setError(e.message); }
     setLoading(false);
@@ -374,69 +363,31 @@ export default function ReportView({ findings, meta, scanId }) {
 
       {mode === 'template' && (
         <div className="template-section">
-          {templatePreview ? (
-            <div className="template-preview">
-              <div className="tp-header">
-                <h3>Report Preview</h3>
-                <div className="tp-actions">
-                  <button className="btn-primary" onClick={downloadTemplate}>Download .docx</button>
-                  <button className="btn-secondary" onClick={() => { setTemplatePreview(null); setTemplateDownloadUrl(null); }}>Back to Edit</button>
-                </div>
-              </div>
-              <div className="tp-document">
-                {templatePreview.map(sec => (
-                  <div key={sec.id} className="tp-section">
-                    <div className={`tp-heading tp-h${sec.level}`}>{sec.title}</div>
-                    <span className={`tp-badge ${sec.fillType === 'keep_original' ? 'tp-kept' : 'tp-ai'}`}>
-                      {sec.fillType === 'keep_original' ? 'Original' : FILL_TYPES.find(f => f.value === sec.fillType)?.label || sec.fillType}
-                    </span>
-                    <div className="tp-content">
-                      {sec.content ? sec.content.split('\n').map((line, i) => (
-                        <p key={i}>{line}</p>
-                      )) : <p className="tp-empty">No content</p>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : !template ? (
+          {!template ? (
             <div className="template-upload-area">
               <label className="template-upload-btn">
                 {uploading ? 'Uploading...' : 'Upload .docx Template'}
                 <input type="file" accept=".docx" onChange={handleTemplateUpload} hidden disabled={uploading} />
               </label>
-              <p className="template-hint">Upload a previous report as template. AI will rewrite the Conclusion and Finding Details sections using your template's format.</p>
+              <p className="template-hint">Upload a previous report as template. The system will auto-detect the finding details section and fill it with scan data following your template's format.</p>
             </div>
           ) : (
             <>
               <div className="template-info">
                 <span className="template-file-badge">{template.fileName}</span>
-                <button className="btn-link" onClick={() => { setTemplate(null); setTemplateSections([]); }}>Change template</button>
+                <button className="btn-link" onClick={() => { setTemplate(null); setTemplateDownloadUrl(null); }}>Change template</button>
               </div>
 
-              <div className="template-sections">
-                <h3>Template Sections</h3>
-                <p className="template-hint">Mark which sections are Conclusion/Summary and which are Finding Details. Everything else stays as-is.</p>
-                {templateSections.map(sec => (
-                  <div key={sec.id} className="ts-item">
-                    <div className="ts-header">
-                      <span className="ts-heading" style={{ paddingLeft: (sec.level - 1) * 16 }}>
-                        {'#'.repeat(sec.level)} {sec.title}
-                      </span>
-                    </div>
-                    {sec.content && <p className="ts-preview">{sec.content.slice(0, 150)}{sec.content.length > 150 ? '...' : ''}</p>}
-                    <div className="ts-controls">
-                      <select value={sec.fillType} onChange={e => updateSection(sec.id, 'fillType', e.target.value)}>
-                        {FILL_TYPES.map(ft => <option key={ft.value} value={ft.value}>{ft.label}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <button className="btn-primary" onClick={generateFromTemplate} disabled={loading}>
-                {loading ? 'Generating...' : 'Generate Report'}
-              </button>
+              {templateDownloadUrl ? (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button className="btn-primary" onClick={downloadTemplate}>Download .docx</button>
+                  <button className="btn-secondary" onClick={() => setTemplateDownloadUrl(null)}>Generate Again</button>
+                </div>
+              ) : (
+                <button className="btn-primary" onClick={generateFromTemplate} disabled={loading || !findings.length}>
+                  {loading ? 'Generating...' : 'Generate Report'}
+                </button>
+              )}
             </>
           )}
         </div>

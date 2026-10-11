@@ -807,10 +807,10 @@ app.post('/api/report/template/upload', templateUpload.single('template'), async
   }
 });
 
-// Generate .docx from template — modify original, preserve formatting
+// Generate .docx from template — auto-detect finding section, fill with scan data
 app.post('/api/report/template/generate', async (req, res) => {
-  const { templateId, sections, findings, meta } = req.body;
-  if (!sections || !findings) return res.status(400).json({ error: 'Missing sections or findings' });
+  const { templateId, findings, meta } = req.body;
+  if (!findings?.length) return res.status(400).json({ error: 'No findings provided' });
 
   const templatePath = join(TEMPLATE_DIR, templateId);
   if (!existsSync(templatePath)) return res.status(404).json({ error: 'Template not found' });
@@ -820,212 +820,141 @@ app.post('/api/report/template/generate', async (req, res) => {
 
     const severityOrder = { Critical: 0, High: 1, Medium: 2, Low: 3, Info: 4 };
     const sorted = [...findings].sort((a, b) => (severityOrder[a.severity] ?? 5) - (severityOrder[b.severity] ?? 5));
-    const severityCounts = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
-    for (const f of sorted) severityCounts[f.severity] = (severityCounts[f.severity] || 0) + 1;
 
-    const findingsSummary = sorted.map((f, i) => `${i+1}. [${f.severity}] ${f.title}${f.cvss ? ` (CVSS ${f.cvss})` : ''}${f.cwe ? ` CWE-${f.cwe}` : ''}: ${(f.description || '').slice(0, 200)}`).join('\n');
-    const contextBlock = `Client: ${meta?.clientName || 'Target Organization'}\nTarget: ${meta?.targetName || 'the target application'}\nTesting: ${meta?.testingType || 'Black Box'}\nTotal: ${sorted.length} findings (${Object.entries(severityCounts).filter(([,v])=>v>0).map(([k,v])=>`${v} ${k}`).join(', ')})\n\nFindings:\n${findingsSummary}`;
-
-    // Open original .docx and parse structure FIRST to extract existing content as format reference
     const raw = await readFile(templatePath);
     const zip = await JSZip.loadAsync(raw);
     const docXml = await zip.file('word/document.xml').async('string');
 
-    // Parse paragraphs: find headings and content between them
+    // Parse all paragraphs
     const paraRegex = /<w:p[ >][\s\S]*?<\/w:p>/g;
     const headingStyleRegex = /<w:pStyle\s+w:val="Heading(\d)"/i;
-
     const paras = [];
     let m;
     while ((m = paraRegex.exec(docXml)) !== null) {
       const xml = m[0];
-      const start = m.index;
-      const end = start + xml.length;
       const headingMatch = xml.match(headingStyleRegex);
       let text = '';
       let tm;
       const tReg = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
       while ((tm = tReg.exec(xml)) !== null) text += tm[1];
-      paras.push({ xml, start, end, heading: headingMatch ? parseInt(headingMatch[1]) : 0, text: text.trim() });
+      paras.push({ xml, start: m.index, end: m.index + xml.length, heading: headingMatch ? parseInt(headingMatch[1]) : 0, text: text.trim() });
     }
 
-    const findSectionRange = (title) => {
-      const norm = title.replace(/\s+/g, ' ').trim().toLowerCase();
-      const idx = paras.findIndex(p => p.heading > 0 && p.text.replace(/\s+/g, ' ').trim().toLowerCase() === norm);
-      if (idx < 0) return null;
-      let endIdx = idx + 1;
-      while (endIdx < paras.length && (paras[endIdx].heading === 0 || paras[endIdx].heading > paras[idx].heading)) endIdx++;
-      return { idx, endIdx };
-    };
-
-    // Extract existing content from template for each section (used as format reference)
-    const existingContent = {};
-    for (const sec of sections) {
-      const range = findSectionRange(sec.title);
-      if (!range) continue;
-      existingContent[sec.id] = paras.slice(range.idx + 1, range.endIdx).map(p => p.text).filter(Boolean).join('\n');
+    // Auto-detect: find H1 that contains H2 children (the finding details section)
+    let findingH1Idx = -1;
+    let findingH1End = -1;
+    for (let i = 0; i < paras.length; i++) {
+      if (paras[i].heading !== 1) continue;
+      let endIdx = i + 1;
+      while (endIdx < paras.length && (paras[endIdx].heading === 0 || paras[endIdx].heading > 1)) endIdx++;
+      const hasH2 = paras.slice(i + 1, endIdx).some(p => p.heading === 2);
+      if (hasH2) { findingH1Idx = i; findingH1End = endIdx; break; }
     }
+    if (findingH1Idx < 0) return res.status(400).json({ error: 'Could not find a section with H2 finding blocks in template' });
+
+    // Find first H2 inside the finding section — this is the template block to clone
+    const h2Idx = paras.findIndex((p, i) => i > findingH1Idx && i < findingH1End && p.heading === 2);
+    if (h2Idx < 0) return res.status(400).json({ error: 'No H2 finding block found in template' });
+
+    const blockStart = paras[h2Idx].start;
+    const blockEnd = findingH1End < paras.length ? paras[findingH1End].start : paras[findingH1End - 1].end;
+    const templateBlock = docXml.slice(blockStart, blockEnd);
 
     const stripInvalidXmlChars = (s) => String(s ?? '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
     const escXml = (s) => stripInvalidXmlChars(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-    // Helper: replace text inside <w:t> elements matching a pattern
     const replaceXmlText = (xml, oldText, newText) => {
       const escaped = escXml(newText);
       const pattern = oldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return xml.replace(new RegExp(`(<w:t[^>]*>)([^<]*${pattern}[^<]*)(<\\/w:t>)`, 'g'), (m, open, text, close) => {
+      return xml.replace(new RegExp(`(<w:t[^>]*>)([^<]*${pattern}[^<]*)(<\\/w:t>)`, 'g'), (match, open, text, close) => {
         return open + text.replace(oldText, escaped) + close;
       });
     };
 
-    // Helper: replace all content paragraphs between two H3 headings in a block
     const replaceH3Content = (blockXml, h3Title, newContent) => {
       const blockParas = [];
       let bm;
       const bpr = /<w:p[ >][\s\S]*?<\/w:p>/g;
       while ((bm = bpr.exec(blockXml)) !== null) {
-        const hm = blockXml.slice(bm.index, bm.index + bm[0].length).match(/<w:pStyle\s+w:val="Heading(\d)"/i);
+        const hm = bm[0].match(/<w:pStyle\s+w:val="Heading(\d)"/i);
         const ts = [];
         let tm2;
         const tr2 = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
         while ((tm2 = tr2.exec(bm[0])) !== null) ts.push(tm2[1]);
         blockParas.push({ start: bm.index, end: bm.index + bm[0].length, heading: hm ? parseInt(hm[1]) : 0, text: ts.join('').trim() });
       }
-      const h3Idx = blockParas.findIndex(p => p.heading === 3 && p.text.toLowerCase().includes(h3Title.toLowerCase()));
-      if (h3Idx < 0) return blockXml;
-      let endIdx = h3Idx + 1;
+      const h3i = blockParas.findIndex(p => p.heading === 3 && p.text.toLowerCase().includes(h3Title.toLowerCase()));
+      if (h3i < 0) return blockXml;
+      let endIdx = h3i + 1;
       while (endIdx < blockParas.length && blockParas[endIdx].heading === 0) endIdx++;
-      if (h3Idx + 1 >= endIdx) return blockXml;
-      const contentStart = blockParas[h3Idx + 1].start;
+      if (h3i + 1 >= endIdx) return blockXml;
+      const contentStart = blockParas[h3i + 1].start;
       const contentEnd = endIdx < blockParas.length ? blockParas[endIdx].start : blockParas[endIdx - 1].end;
       const newParaXml = newContent.split('\n').filter(l => l.trim()).map(l => `<w:p><w:r><w:t xml:space="preserve">${escXml(l)}</w:t></w:r></w:p>`).join('');
       return blockXml.slice(0, contentStart) + newParaXml + blockXml.slice(contentEnd);
     };
 
-    // Collect replacement instructions: { secId, type: 'text'|'xml', content, range }
-    const replacements = [];
+    // Clone and fill for each finding
+    const clonedBlocks = [];
+    const h2TitleText = paras[h2Idx].text;
+    const baseSectionNum = h2TitleText.match(/^(\d+)\./)?.[1] || '3';
 
-    for (const sec of sections) {
-      if (!sec.fillType) continue;
-      const range = findSectionRange(sec.title);
-      if (!range) continue;
+    for (let i = 0; i < sorted.length; i++) {
+      const f = sorted[i];
+      let block = templateBlock;
 
-      if (sec.fillType === 'conclusion') {
-        const formatRef = existingContent[sec.id] || '';
-        const formatInstruction = formatRef
-          ? `Here is the existing conclusion from the template — follow this EXACT writing style, tone, and structure:\n---\n${formatRef.slice(0, 2000)}\n---\nRewrite it for the NEW findings below. Keep the same format and level of detail.`
-          : 'Write a professional conclusion/summary for a penetration test report. Cover key findings, overall security posture, and high-level recommendations.';
-        const text = await callLLM([
-          { role: 'system', content: 'You are a senior penetration tester writing the conclusion/summary section of a pentest report. Write plain text only, no markdown formatting. Match the style of the reference text exactly.' },
-          { role: 'user', content: `${formatInstruction}\n\n${contextBlock}` },
-        ], 2000);
-        if (text) replacements.push({ secId: sec.id, type: 'text', content: text, range });
+      block = replaceXmlText(block, h2TitleText, `${baseSectionNum}.${i + 1}. ${f.title}`);
 
-      } else if (sec.fillType === 'finding_detail') {
-        // Find the first H2 child (the finding template block)
-        const h2Idx = paras.findIndex((p, i) => i > range.idx && i < range.endIdx && p.heading === 2);
-        if (h2Idx < 0) continue;
-
-        // Extract the finding template XML block (from H2 to section end)
-        const blockStart = paras[h2Idx].start;
-        const blockEnd = range.endIdx < paras.length ? paras[range.endIdx].start : paras[range.endIdx - 1].end;
-        const templateBlock = docXml.slice(blockStart, blockEnd);
-
-        // Clone and fill for each finding
-        const clonedBlocks = [];
-        for (let i = 0; i < sorted.length; i++) {
-          const f = sorted[i];
-          let block = templateBlock;
-
-          // Replace H2 title number and name
-          const h2TitleMatch = paras[h2Idx].text;
-          const sectionNum = h2TitleMatch.match(/^(\d+\.\d+)\./)?.[1] || `3.${i + 1}`;
-          const newNum = `${sectionNum.split('.')[0]}.${i + 1}`;
-          block = replaceXmlText(block, h2TitleMatch, `${newNum}. ${f.title}`);
-
-          // Replace table cell values
-          block = replaceXmlText(block, '[APP-001]', `APP-${String(i + 1).padStart(3, '0')}`);
-          block = replaceXmlText(block, '[FINDING TITLE]', f.title);
-          block = replaceXmlText(block, '[SCORE AND VECTOR]', f.cvss || 'N/A');
-          block = replaceXmlText(block, '[CWE-XXX]', f.cwe ? `CWE-${f.cwe}` : 'N/A');
-          block = replaceXmlText(block, '[DD MMM YYYY]', new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }));
-          block = replaceXmlText(block, '[URL / ENDPOINT / HOST / APPLICATION BUILD / FUNCTION]', f.affectedAsset || 'N/A');
-          block = replaceXmlText(block, '[WEB / MOBILE / API / INFRASTRUCTURE]', 'WEB');
-          block = replaceXmlText(block, '[CLOSED / OPEN / RISK ACCEPTED]', f.status || 'Open');
-          block = replaceXmlText(block, '[FIXED / PARTIALLY FIXED / NOT FIXED / UNABLE TO VERIFY]', 'Not Fixed');
-          block = replaceXmlText(block, '[CRITICAL / HIGH / MEDIUM / LOW]', f.severity || 'N/A');
-
-          // Replace H3 section content with finding data
-          block = replaceH3Content(block, 'Observation', f.description || 'No description available.');
-          block = replaceH3Content(block, 'Security Impact', f.impact || 'Impact assessment pending.');
-          block = replaceH3Content(block, 'Evidence', f.evidence?.detail || 'Evidence documentation pending.');
-          block = replaceH3Content(block, 'Recommendation', f.remediationSteps || f.remediation || 'Remediation steps pending.');
-          block = replaceH3Content(block, 'Retest', 'Retest pending.');
-
-          clonedBlocks.push(block);
-        }
-
-        // The replacement range: from H2 start to section end (keep H1 heading)
-        replacements.push({
-          secId: sec.id, type: 'xml',
-          content: clonedBlocks.join(''),
-          customRange: { contentStart: h2Idx, contentEnd: range.endIdx },
-        });
-      }
-    }
-
-    // Apply replacements backwards to preserve offsets
-    let newDocXml = docXml;
-    replacements.sort((a, b) => {
-      const aStart = a.customRange ? a.customRange.contentStart : a.range.idx + 1;
-      const bStart = b.customRange ? b.customRange.contentStart : b.range.idx + 1;
-      return bStart - aStart;
-    });
-
-    for (const rep of replacements) {
-      const cStart = rep.customRange ? rep.customRange.contentStart : rep.range.idx + 1;
-      const cEnd = rep.customRange ? rep.customRange.contentEnd : rep.range.endIdx;
-      if (cStart >= cEnd) continue;
-
-      const replaceStart = paras[cStart].start;
-      const replaceEnd = cEnd < paras.length ? paras[cEnd].start : paras[cEnd - 1].end;
-
-      let newContent;
-      if (rep.type === 'xml') {
-        newContent = rep.content;
-      } else {
-        newContent = rep.content.split('\n').filter(l => l.trim()).map(l => `<w:p><w:r><w:t xml:space="preserve">${escXml(l)}</w:t></w:r></w:p>`).join('');
+      // CVSS vector string
+      const cvssVecMap = { attack_vector: 'AV', attack_complexity: 'AC', privileges_required: 'PR', user_interaction: 'UI', scope: 'S', confidentiality: 'C', integrity: 'I', availability: 'A' };
+      let cvssStr = f.cvss != null ? String(f.cvss) : 'N/A';
+      if (f.cvssVector && typeof f.cvssVector === 'object') {
+        const parts = Object.entries(f.cvssVector).map(([k, v]) => `${cvssVecMap[k] || k}:${String(v).charAt(0).toUpperCase()}`).filter(p => p.includes(':'));
+        if (parts.length) cvssStr += ` (CVSS:3.1/${parts.join('/')})`;
       }
 
-      newDocXml = newDocXml.slice(0, replaceStart) + newContent + newDocXml.slice(replaceEnd);
+      // Full endpoint URL
+      const targetDomain = (meta?.targets?.[0] || '').replace(/\/+$/, '');
+      const fullEndpoint = f.affectedAsset
+        ? (f.affectedAsset.startsWith('http') ? f.affectedAsset : `${targetDomain}${f.affectedAsset.startsWith('/') ? '' : '/'}${f.affectedAsset}`)
+        : 'N/A';
+
+      const sevCapitalized = f.severity ? f.severity.charAt(0).toUpperCase() + f.severity.slice(1).toLowerCase() : 'N/A';
+
+      // Table cell replacements
+      block = replaceXmlText(block, '[APP-001]', `APP-${String(i + 1).padStart(3, '0')}`);
+      block = replaceXmlText(block, '[FINDING TITLE]', f.title);
+      block = replaceXmlText(block, '[SCORE AND VECTOR]', cvssStr);
+      block = replaceXmlText(block, '[CWE-XXX]', f.cwe || 'N/A');
+      block = replaceXmlText(block, '[DD MMM YYYY]', new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }));
+      block = replaceXmlText(block, '[URL / ENDPOINT / HOST / APPLICATION BUILD / FUNCTION]', `${f.method || 'GET'} ${fullEndpoint}`);
+      block = replaceXmlText(block, '[WEB / MOBILE / API / INFRASTRUCTURE]', 'WEB');
+      block = replaceXmlText(block, '[CLOSED / OPEN / RISK ACCEPTED]', f.status || 'Open');
+      block = replaceXmlText(block, '[FIXED / PARTIALLY FIXED / NOT FIXED / UNABLE TO VERIFY]', 'Not Fixed');
+      block = replaceXmlText(block, '[CRITICAL / HIGH / MEDIUM / LOW]', sevCapitalized);
+
+      // H3 content replacements
+      block = replaceH3Content(block, 'Observation', f.description || 'No description available.');
+      block = replaceH3Content(block, 'Security Impact', f.impact || 'Impact assessment pending.');
+      block = replaceH3Content(block, 'Evidence', f.evidence?.detail || 'Evidence documentation pending.');
+      block = replaceH3Content(block, 'Recommendation', f.remediationSteps || f.remediation || 'Remediation steps pending.');
+      block = replaceH3Content(block, 'Retest', 'Retest pending.');
+
+      clonedBlocks.push(block);
     }
+
+    // Replace the finding blocks region (keep H1 heading)
+    const replaceStart = paras[h2Idx].start;
+    const replaceEnd = findingH1End < paras.length ? paras[findingH1End].start : paras[findingH1End - 1].end;
+    const newDocXml = docXml.slice(0, replaceStart) + clonedBlocks.join('') + docXml.slice(replaceEnd);
 
     zip.file('word/document.xml', newDocXml);
     const outBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
 
     const outName = `report-${Date.now()}.docx`;
-    const outPath = join(TEMPLATE_DIR, outName);
-    await writeFile(outPath, outBuffer);
+    await writeFile(join(TEMPLATE_DIR, outName), outBuffer);
 
-    const previewContent = {};
-    for (const rep of replacements) {
-      if (rep.type === 'text') {
-        previewContent[rep.secId] = rep.content;
-      } else {
-        previewContent[rep.secId] = sorted.map((f, i) =>
-          `${i + 1}. ${f.title} [${f.severity}]${f.cvss ? ` CVSS ${f.cvss}` : ''}\n${f.description || ''}`
-        ).join('\n\n');
-      }
-    }
-    const preview = sections.map(sec => ({
-      id: sec.id,
-      title: sec.title,
-      level: sec.level,
-      fillType: sec.fillType || 'keep_original',
-      content: previewContent[sec.id] || existingContent[sec.id] || '',
-    }));
-
-    res.json({ downloadUrl: `/api/report/template/download/${outName}`, preview });
+    res.json({ downloadUrl: `/api/report/template/download/${outName}` });
   } catch (e) {
     console.error('Template generate error:', e);
     res.status(500).json({ error: e.message });
