@@ -917,13 +917,17 @@ app.post('/api/report/template/generate', async (req, res) => {
     let newDocXml = docXml;
     sectionRanges.sort((a, b) => b.contentStart - a.contentStart);
 
+    const bodyCloseIdx = newDocXml.indexOf('</w:body>');
+
     for (const range of sectionRanges) {
       if (range.contentStart >= range.contentEnd) continue;
       const text = sectionContent[range.secId];
       if (!text) continue;
 
       const replaceStart = paras[range.contentStart].start;
-      const replaceEnd = paras[range.contentEnd - 1].end;
+      const replaceEnd = range.contentEnd < paras.length
+        ? paras[range.contentEnd].start
+        : bodyCloseIdx > 0 ? bodyCloseIdx : paras[range.contentEnd - 1].end;
 
       const newParas = stripInvalidXmlChars(text).split('\n').filter(l => l.trim()).map(line => {
         const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
