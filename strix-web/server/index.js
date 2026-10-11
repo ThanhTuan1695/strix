@@ -866,73 +866,138 @@ app.post('/api/report/template/generate', async (req, res) => {
       existingContent[sec.id] = paras.slice(range.idx + 1, range.endIdx).map(p => p.text).filter(Boolean).join('\n');
     }
 
-    // Generate AI content only for conclusion and finding_detail sections
     const stripInvalidXmlChars = (s) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
-    const sectionContent = {};
+    const escXml = (s) => stripInvalidXmlChars(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    // Helper: replace text inside <w:t> elements matching a pattern
+    const replaceXmlText = (xml, oldText, newText) => {
+      const escaped = escXml(newText);
+      const pattern = oldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return xml.replace(new RegExp(`(<w:t[^>]*>)([^<]*${pattern}[^<]*)(<\\/w:t>)`, 'g'), (m, open, text, close) => {
+        return open + text.replace(oldText, escaped) + close;
+      });
+    };
+
+    // Helper: replace all content paragraphs between two H3 headings in a block
+    const replaceH3Content = (blockXml, h3Title, newContent) => {
+      const blockParas = [];
+      let bm;
+      const bpr = /<w:p[ >][\s\S]*?<\/w:p>/g;
+      while ((bm = bpr.exec(blockXml)) !== null) {
+        const hm = blockXml.slice(bm.index, bm.index + bm[0].length).match(/<w:pStyle\s+w:val="Heading(\d)"/i);
+        const ts = [];
+        let tm2;
+        const tr2 = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
+        while ((tm2 = tr2.exec(bm[0])) !== null) ts.push(tm2[1]);
+        blockParas.push({ start: bm.index, end: bm.index + bm[0].length, heading: hm ? parseInt(hm[1]) : 0, text: ts.join('').trim() });
+      }
+      const h3Idx = blockParas.findIndex(p => p.heading === 3 && p.text.toLowerCase().includes(h3Title.toLowerCase()));
+      if (h3Idx < 0) return blockXml;
+      let endIdx = h3Idx + 1;
+      while (endIdx < blockParas.length && blockParas[endIdx].heading === 0) endIdx++;
+      if (h3Idx + 1 >= endIdx) return blockXml;
+      const contentStart = blockParas[h3Idx + 1].start;
+      const contentEnd = endIdx < blockParas.length ? blockParas[endIdx].start : blockParas[endIdx - 1].end;
+      const newParaXml = newContent.split('\n').filter(l => l.trim()).map(l => `<w:p><w:r><w:t xml:space="preserve">${escXml(l)}</w:t></w:r></w:p>`).join('');
+      return blockXml.slice(0, contentStart) + newParaXml + blockXml.slice(contentEnd);
+    };
+
+    // Collect replacement instructions: { secId, type: 'text'|'xml', content, range }
+    const replacements = [];
 
     for (const sec of sections) {
       if (!sec.fillType) continue;
-      let text = '';
+      const range = findSectionRange(sec.title);
+      if (!range) continue;
 
       if (sec.fillType === 'conclusion') {
         const formatRef = existingContent[sec.id] || '';
         const formatInstruction = formatRef
           ? `Here is the existing conclusion from the template — follow this EXACT writing style, tone, and structure:\n---\n${formatRef.slice(0, 2000)}\n---\nRewrite it for the NEW findings below. Keep the same format and level of detail.`
           : 'Write a professional conclusion/summary for a penetration test report. Cover key findings, overall security posture, and high-level recommendations.';
-        text = await callLLM([
+        const text = await callLLM([
           { role: 'system', content: 'You are a senior penetration tester writing the conclusion/summary section of a pentest report. Write plain text only, no markdown formatting. Match the style of the reference text exactly.' },
           { role: 'user', content: `${formatInstruction}\n\n${contextBlock}` },
         ], 2000);
+        if (text) replacements.push({ secId: sec.id, type: 'text', content: text, range });
 
       } else if (sec.fillType === 'finding_detail') {
-        const formatRef = existingContent[sec.id] || '';
-        const formatInstruction = formatRef
-          ? `Here is an example finding from the template — follow this EXACT writing style, structure, and section headers:\n---\n${formatRef.slice(0, 3000)}\n---\nWrite EACH new finding below using this same format.`
-          : 'Write each finding with: Description, Impact, Remediation, and Evidence sections.';
-        const parts = [];
+        // Find the first H2 child (the finding template block)
+        const h2Idx = paras.findIndex((p, i) => i > range.idx && i < range.endIdx && p.heading === 2);
+        if (h2Idx < 0) continue;
+
+        // Extract the finding template XML block (from H2 to section end)
+        const blockStart = paras[h2Idx].start;
+        const blockEnd = range.endIdx < paras.length ? paras[range.endIdx].start : paras[range.endIdx - 1].end;
+        const templateBlock = docXml.slice(blockStart, blockEnd);
+
+        // Clone and fill for each finding
+        const clonedBlocks = [];
         for (let i = 0; i < sorted.length; i++) {
           const f = sorted[i];
-          const detail = await callLLM([
-            { role: 'system', content: `You are a senior penetration tester writing a finding for a professional pentest report. Write plain text only, no markdown. ${formatInstruction}` },
-            { role: 'user', content: `Finding ${i+1}: ${f.title}\nSeverity: ${f.severity}${f.cvss ? `, CVSS ${f.cvss}` : ''}${f.cwe ? `, CWE-${f.cwe}` : ''}\nAsset: ${f.affectedAsset || 'N/A'}\nDescription: ${f.description || 'None'}\nImpact: ${f.impact || 'None'}\nRemediation: ${f.remediationSteps || f.remediation || 'None'}\nEvidence: ${f.evidence?.detail?.slice(0, 500) || 'N/A'}` },
-          ], 1200).catch(() => '');
-          parts.push(`Finding ${i+1}: ${f.title} [${f.severity}]${f.cvss ? ` CVSS ${f.cvss}` : ''}\n${detail}`);
+          let block = templateBlock;
+
+          // Replace H2 title number and name
+          const h2TitleMatch = paras[h2Idx].text;
+          const sectionNum = h2TitleMatch.match(/^(\d+\.\d+)\./)?.[1] || `3.${i + 1}`;
+          const newNum = `${sectionNum.split('.')[0]}.${i + 1}`;
+          block = replaceXmlText(block, h2TitleMatch, `${newNum}. ${f.title}`);
+
+          // Replace table cell values
+          block = replaceXmlText(block, '[APP-001]', `APP-${String(i + 1).padStart(3, '0')}`);
+          block = replaceXmlText(block, '[FINDING TITLE]', f.title);
+          block = replaceXmlText(block, '[SCORE AND VECTOR]', f.cvss || 'N/A');
+          block = replaceXmlText(block, '[CWE-XXX]', f.cwe ? `CWE-${f.cwe}` : 'N/A');
+          block = replaceXmlText(block, '[DD MMM YYYY]', new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }));
+          block = replaceXmlText(block, '[URL / ENDPOINT / HOST / APPLICATION BUILD / FUNCTION]', f.affectedAsset || 'N/A');
+          block = replaceXmlText(block, '[WEB / MOBILE / API / INFRASTRUCTURE]', 'WEB');
+          block = replaceXmlText(block, '[CLOSED / OPEN / RISK ACCEPTED]', f.status || 'Open');
+          block = replaceXmlText(block, '[FIXED / PARTIALLY FIXED / NOT FIXED / UNABLE TO VERIFY]', 'Not Fixed');
+          block = replaceXmlText(block, '[CRITICAL / HIGH / MEDIUM / LOW]', f.severity || 'N/A');
+
+          // Replace H3 section content with finding data
+          block = replaceH3Content(block, 'Observation', f.description || 'No description available.');
+          block = replaceH3Content(block, 'Security Impact', f.impact || 'Impact assessment pending.');
+          block = replaceH3Content(block, 'Evidence', f.evidence?.detail || 'Evidence documentation pending.');
+          block = replaceH3Content(block, 'Recommendation', f.remediationSteps || f.remediation || 'Remediation steps pending.');
+          block = replaceH3Content(block, 'Retest', 'Retest pending.');
+
+          clonedBlocks.push(block);
         }
-        text = parts.join('\n\n');
+
+        // The replacement range: from H2 start to section end (keep H1 heading)
+        replacements.push({
+          secId: sec.id, type: 'xml',
+          content: clonedBlocks.join(''),
+          customRange: { contentStart: h2Idx, contentEnd: range.endIdx },
+        });
+      }
+    }
+
+    // Apply replacements backwards to preserve offsets
+    let newDocXml = docXml;
+    replacements.sort((a, b) => {
+      const aStart = a.customRange ? a.customRange.contentStart : a.range.idx + 1;
+      const bStart = b.customRange ? b.customRange.contentStart : b.range.idx + 1;
+      return bStart - aStart;
+    });
+
+    for (const rep of replacements) {
+      const cStart = rep.customRange ? rep.customRange.contentStart : rep.range.idx + 1;
+      const cEnd = rep.customRange ? rep.customRange.contentEnd : rep.range.endIdx;
+      if (cStart >= cEnd) continue;
+
+      const replaceStart = paras[cStart].start;
+      const replaceEnd = cEnd < paras.length ? paras[cEnd].start : paras[cEnd - 1].end;
+
+      let newContent;
+      if (rep.type === 'xml') {
+        newContent = rep.content;
+      } else {
+        newContent = rep.content.split('\n').filter(l => l.trim()).map(l => `<w:p><w:r><w:t xml:space="preserve">${escXml(l)}</w:t></w:r></w:p>`).join('');
       }
 
-      if (text) sectionContent[sec.id] = text;
-    }
-
-    // Map sections with generated content to heading positions
-    const sectionRanges = [];
-    for (const sec of sections) {
-      if (!sectionContent[sec.id]) continue;
-      const range = findSectionRange(sec.title);
-      if (!range) continue;
-      sectionRanges.push({ secId: sec.id, contentStart: range.idx + 1, contentEnd: range.endIdx });
-    }
-
-    // Build new XML by replacing content sections (work backwards to preserve offsets)
-    let newDocXml = docXml;
-    sectionRanges.sort((a, b) => b.contentStart - a.contentStart);
-
-    for (const range of sectionRanges) {
-      if (range.contentStart >= range.contentEnd) continue;
-      const text = sectionContent[range.secId];
-      if (!text) continue;
-
-      const replaceStart = paras[range.contentStart].start;
-      const replaceEnd = range.contentEnd < paras.length
-        ? paras[range.contentEnd].start
-        : paras[range.contentEnd - 1].end;
-
-      const newParas = stripInvalidXmlChars(text).split('\n').filter(l => l.trim()).map(line => {
-        const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-        return `<w:p><w:r><w:t xml:space="preserve">${escaped}</w:t></w:r></w:p>`;
-      }).join('');
-
-      newDocXml = newDocXml.slice(0, replaceStart) + newParas + newDocXml.slice(replaceEnd);
+      newDocXml = newDocXml.slice(0, replaceStart) + newContent + newDocXml.slice(replaceEnd);
     }
 
     zip.file('word/document.xml', newDocXml);
@@ -942,12 +1007,22 @@ app.post('/api/report/template/generate', async (req, res) => {
     const outPath = join(TEMPLATE_DIR, outName);
     await writeFile(outPath, outBuffer);
 
+    const previewContent = {};
+    for (const rep of replacements) {
+      if (rep.type === 'text') {
+        previewContent[rep.secId] = rep.content;
+      } else {
+        previewContent[rep.secId] = sorted.map((f, i) =>
+          `${i + 1}. ${f.title} [${f.severity}]${f.cvss ? ` CVSS ${f.cvss}` : ''}\n${f.description || ''}`
+        ).join('\n\n');
+      }
+    }
     const preview = sections.map(sec => ({
       id: sec.id,
       title: sec.title,
       level: sec.level,
       fillType: sec.fillType || 'keep_original',
-      content: sectionContent[sec.id] || existingContent[sec.id] || '',
+      content: previewContent[sec.id] || existingContent[sec.id] || '',
     }));
 
     res.json({ downloadUrl: `/api/report/template/download/${outName}`, preview });
