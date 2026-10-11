@@ -840,15 +840,21 @@ app.post('/api/report/template/generate', async (req, res) => {
       paras.push({ xml, start: m.index, end: m.index + xml.length, heading: headingMatch ? parseInt(headingMatch[1]) : 0, text: text.trim() });
     }
 
-    // Auto-detect: find H1 that contains H2 children (the finding details section)
+    // Auto-detect: find H1 whose H2 child has H3 sub-sections (finding template pattern)
     let findingH1Idx = -1;
     let findingH1End = -1;
     for (let i = 0; i < paras.length; i++) {
       if (paras[i].heading !== 1) continue;
       let endIdx = i + 1;
       while (endIdx < paras.length && (paras[endIdx].heading === 0 || paras[endIdx].heading > 1)) endIdx++;
-      const hasH2 = paras.slice(i + 1, endIdx).some(p => p.heading === 2);
-      if (hasH2) { findingH1Idx = i; findingH1End = endIdx; break; }
+      const children = paras.slice(i + 1, endIdx);
+      const firstH2 = children.find(p => p.heading === 2);
+      if (!firstH2) continue;
+      const firstH2Idx = paras.indexOf(firstH2);
+      let h2End = firstH2Idx + 1;
+      while (h2End < endIdx && paras[h2End].heading !== 2 && paras[h2End].heading !== 1) h2End++;
+      const hasH3 = paras.slice(firstH2Idx + 1, h2End).some(p => p.heading === 3);
+      if (hasH3) { findingH1Idx = i; findingH1End = endIdx; break; }
     }
     if (findingH1Idx < 0) return res.status(400).json({ error: 'Could not find a section with H2 finding blocks in template' });
 
