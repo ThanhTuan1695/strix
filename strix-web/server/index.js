@@ -945,13 +945,21 @@ app.post('/api/report/template/generate', async (req, res) => {
     const outPath = join(TEMPLATE_DIR, outName);
     await writeFile(outPath, outBuffer);
 
-    // Build preview: merge original kept sections with AI-generated ones
+    // Build preview: extract original content from parsed XML for kept sections
+    const originalContent = {};
+    for (const sec of sections) {
+      const idx = paras.findIndex(p => p.heading > 0 && p.text.replace(/\s+/g, ' ').trim().toLowerCase() === sec.title.replace(/\s+/g, ' ').trim().toLowerCase());
+      if (idx < 0) continue;
+      let endIdx = idx + 1;
+      while (endIdx < paras.length && (paras[endIdx].heading === 0 || paras[endIdx].heading > paras[idx].heading)) endIdx++;
+      originalContent[sec.id] = paras.slice(idx + 1, endIdx).map(p => p.text).filter(Boolean).join('\n');
+    }
     const preview = sections.map(sec => ({
       id: sec.id,
       title: sec.title,
       level: sec.level,
       fillType: sec.fillType || 'keep_original',
-      content: sectionContent[sec.id] || sec.content || '',
+      content: sectionContent[sec.id] || originalContent[sec.id] || '',
     }));
 
     res.json({ downloadUrl: `/api/report/template/download/${outName}`, preview });
