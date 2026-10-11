@@ -954,11 +954,27 @@ app.post('/api/report/template/generate', async (req, res) => {
     const replaceEnd = findingH1End < paras.length ? paras[findingH1End].start : paras[findingH1End - 1].end;
     const newDocXml = docXml.slice(0, replaceStart) + clonedBlocks.join('') + docXml.slice(replaceEnd);
 
-    zip.file('word/document.xml', newDocXml);
-    const outBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-
+    // Repackage using Python's zipfile (preserves original compression exactly)
+    const tmpXmlPath = join(TEMPLATE_DIR, `_tmp_doc_${Date.now()}.xml`);
     const outName = `report-${Date.now()}.docx`;
-    await writeFile(join(TEMPLATE_DIR, outName), outBuffer);
+    const outPath = join(TEMPLATE_DIR, outName);
+    await writeFile(tmpXmlPath, newDocXml, 'utf-8');
+    await new Promise((resolve, reject) => {
+      const py = spawn('python3', ['-c', `
+import zipfile, sys, shutil
+src, xml_path, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+with zipfile.ZipFile(src, 'r') as zin, zipfile.ZipFile(dst, 'w') as zout:
+    for item in zin.infolist():
+        if item.filename == 'word/document.xml':
+            with open(xml_path, 'rb') as f:
+                zout.writestr(item, f.read())
+        else:
+            zout.writestr(item, zin.read(item.filename))
+`, templatePath, tmpXmlPath, outPath]);
+      py.stderr.on('data', d => console.error('py:', d.toString()));
+      py.on('close', code => { if (code === 0) resolve(); else reject(new Error(`Python repackage failed: ${code}`)); });
+    });
+    await rm(tmpXmlPath, { force: true });
 
     res.json({ downloadUrl: `/api/report/template/download/${outName}` });
   } catch (e) {
