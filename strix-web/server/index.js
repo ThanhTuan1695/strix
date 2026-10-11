@@ -818,8 +818,7 @@ app.post('/api/report/template/generate', async (req, res) => {
   try {
     const JSZip = (await import('jszip')).default;
 
-    const severityOrder = { Critical: 0, High: 1, Medium: 2, Low: 3, Info: 4 };
-    const sorted = [...findings].sort((a, b) => (severityOrder[a.severity] ?? 5) - (severityOrder[b.severity] ?? 5));
+    const sorted = [...findings].sort((a, b) => (parseFloat(b.cvss) || 0) - (parseFloat(a.cvss) || 0));
 
     const raw = await readFile(templatePath);
     const zip = await JSZip.loadAsync(raw);
@@ -925,7 +924,8 @@ app.post('/api/report/template/generate', async (req, res) => {
         ? (f.affectedAsset.startsWith('http') ? f.affectedAsset : `${targetDomain}${f.affectedAsset.startsWith('/') ? '' : '/'}${f.affectedAsset}`)
         : 'N/A';
 
-      const sevCapitalized = f.severity ? f.severity.charAt(0).toUpperCase() + f.severity.slice(1).toLowerCase() : 'N/A';
+      const cvssScore = parseFloat(f.cvss) || 0;
+      const sevFromCvss = cvssScore >= 9 ? 'Critical' : cvssScore >= 7 ? 'High' : cvssScore >= 4 ? 'Medium' : cvssScore > 0 ? 'Low' : 'N/A';
 
       // Table cell replacements
       block = replaceXmlText(block, '[APP-001]', `APP-${String(i + 1).padStart(3, '0')}`);
@@ -937,7 +937,7 @@ app.post('/api/report/template/generate', async (req, res) => {
       block = replaceXmlText(block, '[WEB / MOBILE / API / INFRASTRUCTURE]', 'WEB');
       block = replaceXmlText(block, '[CLOSED / OPEN / RISK ACCEPTED]', f.status || 'Open');
       block = replaceXmlText(block, '[FIXED / PARTIALLY FIXED / NOT FIXED / UNABLE TO VERIFY]', 'Not Fixed');
-      block = replaceXmlText(block, '[CRITICAL / HIGH / MEDIUM / LOW]', sevCapitalized);
+      block = replaceXmlText(block, '[CRITICAL / HIGH / MEDIUM / LOW]', sevFromCvss);
 
       // H3 content replacements
       block = replaceH3Content(block, 'Observation', f.description || 'No description available.');
