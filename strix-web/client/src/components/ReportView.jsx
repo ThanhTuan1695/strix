@@ -186,17 +186,6 @@ export default function ReportView({ findings, meta, scanId }) {
     </div>
   );
 
-  // --- Empty state (no findings but may have saved reports) ---
-  if (!findings.length) {
-    return (
-      <div className="panel">
-        <div className="panel-header"><h2>Report</h2></div>
-        {report ? null : renderSavedReports()}
-        {!report && !savedReports.length && <div className="empty-state"><p>No findings available. Complete a scan first.</p></div>}
-      </div>
-    );
-  }
-
   // --- Report rendered (quick mode) ---
   if (report) {
     const r = report;
@@ -337,29 +326,34 @@ export default function ReportView({ findings, meta, scanId }) {
         </div>
       </div>
 
-      {/* Finding selector */}
-      <div className="finding-selector">
-        <div className="fs-header">
-          <strong>Select Findings ({selectedFindings.length || 'All'} / {findings.length})</strong>
-          <button className="btn-link" onClick={selectAllFindings}>
-            {selectedFindings.length === findings.length ? 'Deselect All' : 'Select All'}
-          </button>
+      {findings.length > 0 && (
+        <div className="finding-selector">
+          <div className="fs-header">
+            <strong>Select Findings ({selectedFindings.length || 'All'} / {findings.length})</strong>
+            <button className="btn-link" onClick={selectAllFindings}>
+              {selectedFindings.length === findings.length ? 'Deselect All' : 'Select All'}
+            </button>
+          </div>
+          <div className="fs-list">
+            {findings.map((f, i) => (
+              <label key={f.id || i} className={`fs-item ${selectedFindings.includes(i) || !selectedFindings.length ? 'selected' : ''}`}>
+                <input type="checkbox"
+                  checked={selectedFindings.includes(i) || !selectedFindings.length}
+                  onChange={() => toggleFinding(i)} />
+                <span className="fs-title">{f.title || f.name || `Finding ${i + 1}`}</span>
+              </label>
+            ))}
+          </div>
         </div>
-        <div className="fs-list">
-          {findings.map((f, i) => (
-            <label key={f.id || i} className={`fs-item ${selectedFindings.includes(i) || !selectedFindings.length ? 'selected' : ''}`}>
-              <input type="checkbox"
-                checked={selectedFindings.includes(i) || !selectedFindings.length}
-                onChange={() => toggleFinding(i)} />
-              <span className="fs-title">{f.title || f.name || `Finding ${i + 1}`}</span>
-            </label>
-          ))}
-        </div>
-      </div>
+      )}
+
+      {!findings.length && mode === 'quick' && (
+        <div className="empty-state"><p>No findings available. Complete a scan first, or use "From Template" mode.</p></div>
+      )}
 
       {error && <p className="report-error">{error}</p>}
 
-      {mode === 'quick' && (
+      {mode === 'quick' && findings.length > 0 && (
         <button className="btn-primary" onClick={generateReport} disabled={loading}>
           {loading ? 'Generating...' : 'Generate Report'}
         </button>
