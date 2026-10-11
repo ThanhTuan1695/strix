@@ -25,6 +25,8 @@ export default function ReportView({ findings, meta, scanId }) {
   const [templateSections, setTemplateSections] = useState([]);
   const [selectedFindings, setSelectedFindings] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [templatePreview, setTemplatePreview] = useState(null);
+  const [templateDownloadUrl, setTemplateDownloadUrl] = useState(null);
 
   // Saved reports
   const [savedReports, setSavedReports] = useState([]);
@@ -138,9 +140,18 @@ export default function ReportView({ findings, meta, scanId }) {
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data = await res.json();
-      const dlRes = await window.apiFetch(data.downloadUrl);
-      if (!dlRes.ok) throw new Error('Download failed');
-      const blob = await dlRes.blob();
+      setTemplatePreview(data.preview);
+      setTemplateDownloadUrl(data.downloadUrl);
+    } catch (e) { setError(e.message); }
+    setLoading(false);
+  };
+
+  const downloadTemplate = async () => {
+    if (!templateDownloadUrl) return;
+    try {
+      const res = await window.apiFetch(templateDownloadUrl);
+      if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -148,7 +159,6 @@ export default function ReportView({ findings, meta, scanId }) {
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) { setError(e.message); }
-    setLoading(false);
   };
 
   const toggleFinding = (idx) => {
@@ -366,7 +376,32 @@ export default function ReportView({ findings, meta, scanId }) {
 
       {mode === 'template' && (
         <div className="template-section">
-          {!template ? (
+          {templatePreview ? (
+            <div className="template-preview">
+              <div className="tp-header">
+                <h3>Report Preview</h3>
+                <div className="tp-actions">
+                  <button className="btn-primary" onClick={downloadTemplate}>Download .docx</button>
+                  <button className="btn-secondary" onClick={() => { setTemplatePreview(null); setTemplateDownloadUrl(null); }}>Back to Edit</button>
+                </div>
+              </div>
+              <div className="tp-document">
+                {templatePreview.map(sec => (
+                  <div key={sec.id} className="tp-section">
+                    <div className={`tp-heading tp-h${sec.level}`}>{sec.title}</div>
+                    <span className={`tp-badge ${sec.fillType === 'keep_original' ? 'tp-kept' : 'tp-ai'}`}>
+                      {sec.fillType === 'keep_original' ? 'Original' : FILL_TYPES.find(f => f.value === sec.fillType)?.label || sec.fillType}
+                    </span>
+                    <div className="tp-content">
+                      {sec.content ? sec.content.split('\n').map((line, i) => (
+                        <p key={i}>{line}</p>
+                      )) : <p className="tp-empty">No content</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : !template ? (
             <div className="template-upload-area">
               <label className="template-upload-btn">
                 {uploading ? 'Uploading...' : 'Upload .docx Template'}
@@ -411,7 +446,7 @@ export default function ReportView({ findings, meta, scanId }) {
               </div>
 
               <button className="btn-primary" onClick={generateFromTemplate} disabled={loading}>
-                {loading ? 'Generating .docx...' : 'Generate & Download .docx'}
+                {loading ? 'Generating...' : 'Generate Report'}
               </button>
             </>
           )}

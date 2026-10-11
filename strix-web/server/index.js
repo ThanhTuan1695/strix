@@ -945,7 +945,16 @@ app.post('/api/report/template/generate', async (req, res) => {
     const outPath = join(TEMPLATE_DIR, outName);
     await writeFile(outPath, outBuffer);
 
-    res.json({ downloadUrl: `/api/report/template/download/${outName}` });
+    // Build preview: merge original kept sections with AI-generated ones
+    const preview = sections.map(sec => ({
+      id: sec.id,
+      title: sec.title,
+      level: sec.level,
+      fillType: sec.fillType || 'keep_original',
+      content: sectionContent[sec.id] || sec.content || '',
+    }));
+
+    res.json({ downloadUrl: `/api/report/template/download/${outName}`, preview });
   } catch (e) {
     console.error('Template generate error:', e);
     res.status(500).json({ error: e.message });
