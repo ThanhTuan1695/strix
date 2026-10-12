@@ -338,7 +338,7 @@
 
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
-.full-height { min-height: calc(100vh - 140px); }
+.full-height { min-height: calc(100vh - 120px); }
 
 .finding-count {
   font-size: 12px;

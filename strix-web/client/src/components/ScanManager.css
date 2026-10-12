@@ -3,7 +3,7 @@
   grid-template-columns: 320px 1fr;
   gap: 20px;
   align-items: start;
-  min-height: calc(100vh - 140px);
+  min-height: calc(100vh - 120px);
 }
 
 /* Sidebar */
@@ -24,7 +24,7 @@
 .sm-sidebar-header h3 { font-size: 15px; font-weight: 600; }
 
 .sm-list {
-  max-height: calc(100vh - 200px);
+  max-height: calc(100vh - 180px);
   overflow-y: auto;
 }
 
