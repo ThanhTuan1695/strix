@@ -1,7 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './ScanManager.css';
+import './Panel.css';
 
 const STATUS_COLORS = { running: 'var(--warning)', completed: 'var(--success)', failed: 'var(--danger)', stopped: 'var(--text-secondary)', error: 'var(--danger)' };
+
+function LogIcon({ type }) {
+  const p = { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2 };
+  switch (type) {
+    case 'start': return <svg {...p}><polygon points="5 3 19 12 5 21 5 3"/></svg>;
+    case 'agent': return <svg {...p}><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>;
+    case 'finding': return <svg {...p}><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>;
+    case 'summary': return <svg {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>;
+    case 'complete': return <svg {...p}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>;
+    case 'error': return <svg {...p}><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>;
+    default: return <svg {...p}><circle cx="12" cy="12" r="10"/></svg>;
+  }
+}
 const PHASE_ICONS = { running: '⟳', completed: '✓', error: '✗', skipped: '—' };
 const PHASE_LABELS = {
   mobsf: 'MobSF Scan', 'ai-agent': 'AI Agent', enrichment: 'Enrichment',
@@ -66,7 +80,7 @@ export default function ScanManager({ activeScanId, onSwitchScan, onViewFindings
 
   useEffect(() => {
     if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
-  }, [selectedScan?.output]);
+  }, [selectedScan?.logs?.length]);
 
   const loadAllScans = async () => {
     try {
@@ -413,15 +427,29 @@ export default function ScanManager({ activeScanId, onSwitchScan, onViewFindings
               </div>
             )}
 
-            {/* Web scan: CLI output */}
-            {!isMobile && selectedScan.output != null && (
+            {/* Web scan: event log */}
+            {!isMobile && selectedScan.logs?.length > 0 && (
               <div className="output-area" ref={outputRef}>
-                <pre>{selectedScan.output || 'Waiting for output...'}</pre>
+                <div className="scan-log-timeline">
+                  {selectedScan.logs.map((log, i) => (
+                    <div key={i} className={`log-event log-event-${log.type}`}>
+                      <span className="log-event-icon"><LogIcon type={log.type} /></span>
+                      <span className="log-event-time">{log.ts ? new Date(log.ts).toLocaleTimeString() : ''}</span>
+                      <span className="log-event-msg">{log.msg}</span>
+                    </div>
+                  ))}
+                  {selectedScan.status === 'running' && (
+                    <div className="log-event log-event-running">
+                      <span className="log-event-icon"><span className="scanning-dot" /></span>
+                      <span className="log-event-msg">Scanning...</span>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
-            {!isMobile && selectedScan.output == null && (
+            {!isMobile && (!selectedScan.logs || selectedScan.logs.length === 0) && (
               <div className="sm-no-output">
-                <p>This is a past run loaded from disk. No live output available.</p>
+                <p>{selectedScan.status === 'running' ? 'Starting scan...' : 'No output available.'}</p>
                 {findingsCount > 0 && (
                   <button className="btn-primary" style={{ maxWidth: 300 }} onClick={() => onViewFindings?.(selectedId, selectedScan.findings)}>
                     View {findingsCount} Findings
