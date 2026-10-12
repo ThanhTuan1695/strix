@@ -26,6 +26,8 @@ export async function saveScan(scanData) {
   if (!db) return;
   const doc = { ...scanData };
   delete doc.pid;
+  delete doc._rawOutput;
+  delete doc._lineBuffer;
   await db.collection('scans').updateOne(
     { id: doc.id },
     { $set: doc },

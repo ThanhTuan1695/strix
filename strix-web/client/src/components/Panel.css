@@ -615,6 +615,85 @@
 
 .spec-add-more { font-size: 12px; padding: 4px 0; }
 
+/* Scan Log Timeline */
+.scan-log-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+
+.log-event {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  transition: background 0.15s;
+}
+
+.log-event:hover { background: rgba(148, 163, 184, 0.04); }
+
+.log-event-icon {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--text-secondary);
+}
+
+.log-event-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.6;
+  flex-shrink: 0;
+  min-width: 70px;
+}
+
+.log-event-msg {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.log-event-start .log-event-icon { background: rgba(0, 212, 255, 0.15); color: var(--accent); }
+.log-event-start .log-event-msg { color: var(--accent); font-weight: 600; }
+
+.log-event-agent .log-event-icon { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
+
+.log-event-finding .log-event-icon { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+.log-event-finding .log-event-msg { color: var(--warning); }
+
+.log-event-summary .log-event-icon { background: rgba(0, 212, 255, 0.15); color: var(--accent); }
+
+.log-event-complete .log-event-icon { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+.log-event-complete .log-event-msg { color: var(--success); font-weight: 600; }
+
+.log-event-error .log-event-icon { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+.log-event-error .log-event-msg { color: var(--danger); }
+
+.log-event-running .log-event-icon { background: transparent; }
+
+.scanning-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: scan-pulse 1.5s infinite;
+}
+
+@keyframes scan-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+
 @media (max-width: 800px) {
   .output-layout { grid-template-columns: 1fr; }
   .inline-config-row { flex-direction: column; }

@@ -260,7 +260,7 @@ app.post('/api/scan', async (req, res) => {
   const child = spawn(STRIX_BIN, args, { env: scanEnv, cwd: resolve('.') });
 
   const scanData = {
-    id: scanId, status: 'running', output: '', findings: [],
+    id: scanId, status: 'running', output: '', logs: [], findings: [],
     targets: targetList, scanMode: scanMode || 'deep', testingType: testingType || 'blackbox',
     startedAt: new Date().toISOString(), pid: child.pid, runName: null,
   };
@@ -268,10 +268,10 @@ app.post('/api/scan', async (req, res) => {
   saveScan(scanData).catch(() => {});
 
   child.stdout.on('data', (data) => {
-    scanData.output += data.toString();
+    processScanChunk(data.toString(), scanData);
     tryParseRunName(scanData);
   });
-  child.stderr.on('data', (data) => { scanData.output += data.toString(); });
+  child.stderr.on('data', (data) => { processScanChunk(data.toString(), scanData); });
   child.on('close', async (code) => {
     scanData.status = code === 0 ? 'completed' : 'failed';
     scanData.exitCode = code;
@@ -283,7 +283,8 @@ app.post('/api/scan', async (req, res) => {
   });
   child.on('error', (err) => {
     scanData.status = 'error';
-    scanData.output += `\nError: ${err.message}`;
+    if (!scanData.logs) scanData.logs = [];
+    scanData.logs.push({ type: 'error', msg: `Error: ${err.message}`, ts: new Date().toISOString() });
     saveScan(scanData).catch(() => {});
   });
 
@@ -292,14 +293,74 @@ app.post('/api/scan', async (req, res) => {
 
 function tryParseRunName(scanData) {
   if (scanData.runName) return;
-  const match = scanData.output.match(/strix_runs\/([^\s/]+)/);
+  const raw = scanData._rawOutput || scanData.output || '';
+  const match = raw.match(/strix_runs\/([^\s/]+)/);
   if (match) scanData.runName = match[1];
+}
+
+function parseScanLine(line) {
+  const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
+  if (!clean || clean.length < 5) return null;
+
+  if (/Starting Strix scan/i.test(clean)) {
+    return { type: 'start', msg: 'Penetration test started' };
+  }
+  const agentReg = clean.match(/agent\.register \w+ \((.+?)\)/);
+  if (agentReg) {
+    return { type: 'agent', msg: `Agent spawned: ${agentReg[1]}` };
+  }
+  const agentDone = clean.match(/agent_finish: \w+ success=\w+ findings=(\d+) filed_reports=(\d+)/);
+  if (agentDone) {
+    const filed = parseInt(agentDone[2]);
+    if (filed > 0) return { type: 'finding', msg: `${filed} new finding(s) reported` };
+    return null;
+  }
+  const vulnRevised = clean.match(/Vulnerability report (vuln-\d+).*severity=(\w+).*fields=(.+)/);
+  if (vulnRevised) {
+    return { type: 'finding', msg: `Finding ${vulnRevised[1]} [${vulnRevised[2].toUpperCase()}]` };
+  }
+  const vulnNew = clean.match(/Saved (\d+) new vulnerability report/);
+  if (vulnNew) {
+    return { type: 'finding', msg: `${vulnNew[1]} new vulnerability report(s) saved` };
+  }
+  const scanDone = clean.match(/finish_scan: completed scan with (\d+) vulnerability/);
+  if (scanDone) {
+    return { type: 'complete', msg: `Penetration test completed — ${scanDone[1]} vulnerabilities found` };
+  }
+  if (/Strix scan .+ done/i.test(clean)) {
+    return { type: 'complete', msg: 'Scan finished' };
+  }
+  const vulnSummary = clean.match(/(CRITICAL:\s*\d+\s*\|\s*HIGH:\s*\d+\s*\|\s*MEDIUM:\s*\d+.*Total:\s*\d+\))/i);
+  if (vulnSummary) {
+    return { type: 'summary', msg: vulnSummary[1] };
+  }
+  return null;
+}
+
+function processScanChunk(chunk, scanData) {
+  if (!scanData._rawOutput) scanData._rawOutput = '';
+  if (!scanData._lineBuffer) scanData._lineBuffer = '';
+  if (!scanData.logs) scanData.logs = [];
+
+  scanData._rawOutput += chunk;
+  scanData._lineBuffer += chunk;
+
+  const lines = scanData._lineBuffer.split('\n');
+  scanData._lineBuffer = lines.pop() || '';
+
+  for (const line of lines) {
+    const event = parseScanLine(line);
+    if (event) {
+      event.ts = new Date().toISOString();
+      scanData.logs.push(event);
+    }
+  }
 }
 
 app.get('/api/scan/:id', (req, res) => {
   const scan = activeScans.get(req.params.id) || mobileScans.get(req.params.id);
   if (!scan) return res.status(404).json({ error: 'Scan not found' });
-  const data = { ...scan };
+  const { _rawOutput, _lineBuffer, output, ...data } = scan;
   if (data.mergedFindings?.length) data.findings = data.mergedFindings;
   res.json(data);
 });
@@ -362,7 +423,7 @@ app.post('/api/scan/:id/retry', async (req, res) => {
   const child = spawn(STRIX_BIN, args, { env: retryEnv, cwd: resolve('.') });
 
   const scanData = {
-    id: scanId, status: 'running', output: '', findings: [],
+    id: scanId, status: 'running', output: '', logs: [], findings: [],
     targets: oldScan.targets, scanMode: oldScan.scanMode, testingType: oldScan.testingType,
     startedAt: new Date().toISOString(), pid: child.pid, runName: null,
     retriedFrom: oldScan.id,
@@ -370,8 +431,8 @@ app.post('/api/scan/:id/retry', async (req, res) => {
   activeScans.set(scanId, scanData);
   saveScan(scanData).catch(() => {});
 
-  child.stdout.on('data', (data) => { scanData.output += data.toString(); tryParseRunName(scanData); });
-  child.stderr.on('data', (data) => { scanData.output += data.toString(); });
+  child.stdout.on('data', (data) => { processScanChunk(data.toString(), scanData); tryParseRunName(scanData); });
+  child.stderr.on('data', (data) => { processScanChunk(data.toString(), scanData); });
   child.on('close', async (code) => {
     scanData.status = code === 0 ? 'completed' : 'failed';
     scanData.exitCode = code;
@@ -381,7 +442,8 @@ app.post('/api/scan/:id/retry', async (req, res) => {
   });
   child.on('error', (err) => {
     scanData.status = 'error';
-    scanData.output += `\nError: ${err.message}`;
+    if (!scanData.logs) scanData.logs = [];
+    scanData.logs.push({ type: 'error', msg: `Error: ${err.message}`, ts: new Date().toISOString() });
     saveScan(scanData).catch(() => {});
   });
 
@@ -1477,7 +1539,7 @@ app.post('/api/mobile/scan/:id/api-pentest', async (req, res) => {
   const child = spawn(STRIX_BIN, args, { env: scanEnv, cwd: resolve('.') });
 
   const strixScan = {
-    id: scanId, status: 'running', output: '', findings: [],
+    id: scanId, status: 'running', output: '', logs: [], findings: [],
     targets, scanMode: req.body.scanMode || 'standard', testingType: scan.testingType || 'blackbox',
     startedAt: new Date().toISOString(), pid: child.pid, runName: null,
     source: 'mobile-api-extract',
@@ -1488,8 +1550,8 @@ app.post('/api/mobile/scan/:id/api-pentest', async (req, res) => {
   scan.strixScanId = scanId;
   saveMobileScan(scan).catch(() => {});
 
-  child.stdout.on('data', (data) => { strixScan.output += data.toString(); tryParseRunName(strixScan); });
-  child.stderr.on('data', (data) => { strixScan.output += data.toString(); });
+  child.stdout.on('data', (data) => { processScanChunk(data.toString(), strixScan); tryParseRunName(strixScan); });
+  child.stderr.on('data', (data) => { processScanChunk(data.toString(), strixScan); });
   child.on('close', async (code) => {
     strixScan.status = code === 0 ? 'completed' : 'failed';
     strixScan.exitCode = code;
@@ -1499,7 +1561,8 @@ app.post('/api/mobile/scan/:id/api-pentest', async (req, res) => {
   });
   child.on('error', (err) => {
     strixScan.status = 'error';
-    strixScan.output += `\nError: ${err.message}`;
+    if (!strixScan.logs) strixScan.logs = [];
+    strixScan.logs.push({ type: 'error', msg: `Error: ${err.message}`, ts: new Date().toISOString() });
     saveScan(strixScan).catch(() => {});
   });
 
@@ -2307,7 +2370,7 @@ app.post('/api/mobile/dynamic/scan', async (req, res) => {
 
             const strixScanId = `scan-${Date.now()}`;
             const strixScan = {
-              id: strixScanId, status: 'running', output: '', findings: [],
+              id: strixScanId, status: 'running', output: '', logs: [], findings: [],
               targets: targetUrls, scanMode: 'standard', testingType: testingType || 'blackbox',
               startedAt: new Date().toISOString(), pid: strixChild.pid, runName: null,
               source: 'mobile-dynamic', mobileScanId: scanId,
@@ -2316,8 +2379,8 @@ app.post('/api/mobile/dynamic/scan', async (req, res) => {
             saveScan(strixScan).catch(() => {});
             scanData.strixScanId = strixScanId;
 
-            strixChild.stdout.on('data', d => { strixScan.output += d.toString(); tryParseRunName(strixScan); });
-            strixChild.stderr.on('data', d => { strixScan.output += d.toString(); });
+            strixChild.stdout.on('data', d => { processScanChunk(d.toString(), strixScan); tryParseRunName(strixScan); });
+            strixChild.stderr.on('data', d => { processScanChunk(d.toString(), strixScan); });
 
             await new Promise(resolve => {
               strixChild.on('close', async (code) => {
@@ -2330,6 +2393,8 @@ app.post('/api/mobile/dynamic/scan', async (req, res) => {
               });
               strixChild.on('error', (err) => {
                 strixScan.status = 'error';
+                if (!strixScan.logs) strixScan.logs = [];
+                strixScan.logs.push({ type: 'error', msg: `Error: ${err.message}`, ts: new Date().toISOString() });
                 saveScan(strixScan).catch(() => {});
                 log('error', `Strix error: ${err.message}`);
                 resolve();
