@@ -55,7 +55,8 @@ export default function Dashboard({ onNavigate, onViewFindings }) {
 
   const sevCounts = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
   for (const f of allFindings) {
-    if (sevCounts[f.severity] !== undefined) sevCounts[f.severity]++;
+    const sev = f.severity ? f.severity.charAt(0).toUpperCase() + f.severity.slice(1).toLowerCase() : null;
+    if (sev && sevCounts[sev] !== undefined) sevCounts[sev]++;
   }
   const maxSevCount = Math.max(1, ...Object.values(sevCounts));
 
