@@ -273,7 +273,7 @@ export default function MobileScanPanel({ configured, onScanStarted }) {
               <PipelineStep n={2} label="Install APK" desc="Deploy to emulator, detect package" />
               <PipelineStep n={3} label="SSL + Root Bypass" desc="Frida hooks for traffic interception" />
               <PipelineStep n={4} label="AI Crawl" desc="Auto-explore all screens & functions" />
-              <PipelineStep n={5} label="Strix API Pentest" desc="SQLi, IDOR, auth bypass on captured endpoints" />
+              <PipelineStep n={5} label="Pentest Agent API Scan" desc="SQLi, IDOR, auth bypass on captured endpoints" />
               <PipelineStep n={6} label="Config Checks" desc="Pinning, root detect, storage, hardcoded creds" />
             </div>
           </div>

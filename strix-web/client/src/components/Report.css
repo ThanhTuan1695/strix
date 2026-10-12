@@ -151,7 +151,7 @@
 .finding-meta-table td:first-child { width: 160px; font-weight: 500; color: var(--text-secondary); }
 
 .report-code {
-  background: #0a0a10;
+  background: #040810;
   padding: 12px;
   border-radius: 6px;
   font-family: 'SF Mono', monospace;
@@ -164,7 +164,7 @@
 }
 
 .report-poc-steps {
-  background: #0a0a10;
+  background: #040810;
   border-radius: 6px;
   padding: 16px 16px 16px 36px;
   margin: 8px 0 16px;
@@ -359,8 +359,8 @@
   border-bottom: 1px solid rgba(255,255,255,0.03);
 }
 
-.fs-item:hover { background: rgba(108, 92, 231, 0.06); }
-.fs-item.selected { background: rgba(108, 92, 231, 0.04); }
+.fs-item:hover { background: rgba(0, 212, 255, 0.06); }
+.fs-item.selected { background: rgba(0, 212, 255, 0.04); }
 
 .fs-item input[type="checkbox"] {
   accent-color: var(--accent);
@@ -402,13 +402,13 @@
 .template-upload-btn {
   display: inline-block;
   padding: 12px 28px;
-  background: linear-gradient(135deg, #6c5ce7, #a855f7);
+  background: linear-gradient(135deg, #00d4ff, #a855f7);
   color: white;
   border-radius: 10px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.2s;
+  transition: all 0.3s ease;
 }
 
 .template-upload-btn:hover { opacity: 0.9; }
@@ -432,7 +432,7 @@
   align-items: center;
   gap: 6px;
   padding: 6px 14px;
-  background: rgba(108, 92, 231, 0.1);
+  background: rgba(0, 212, 255, 0.1);
   color: var(--accent);
   border-radius: 8px;
   font-size: 13px;
@@ -542,7 +542,7 @@
   letter-spacing: 0.5px;
 }
 .tp-kept { background: rgba(46, 213, 115, 0.12); color: #2ed573; }
-.tp-ai { background: rgba(108, 92, 231, 0.12); color: #a29bfe; }
+.tp-ai { background: rgba(0, 212, 255, 0.12); color: #67e8f9; }
 
 .tp-content { font-size: 14px; line-height: 1.7; color: var(--text-secondary); }
 .tp-content p { margin: 0 0 6px; }
