@@ -64,4 +64,4 @@ ENV PATH="/opt/strix/.venv/bin:$PATH"
 
 EXPOSE 3001
 
-CMD ["node", "index.js"]
+CMD ["sh", "-c", "mkdir -p /root/.strix/bin && printf '#!/bin/sh\\nexec /opt/strix/.venv/bin/python -W ignore::RuntimeWarning -m strix.interface.main \"$@\"\\n' > /root/.strix/bin/strix && chmod +x /root/.strix/bin/strix && exec node index.js"]
