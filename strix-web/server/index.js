@@ -1334,6 +1334,7 @@ app.post('/api/mobile/scan', async (req, res) => {
     appInfo: null,
     progress: [],
     strixScanId: null,
+    configChecks: null,
   };
   mobileScans.set(scanId, scanData);
   saveMobileScan(scanData).catch(() => {});
@@ -1381,21 +1382,21 @@ app.post('/api/mobile/scan', async (req, res) => {
         }
       }
 
-      // Phase 2: AI Agent analysis
+      // Extract APK/IPA metadata (shared by AI agent + config checks)
+      scanData.progress.push({ type: 'phase', message: 'Extracting app metadata...' });
+      let apkMeta = { manifest: '', strings: '', fileList: '' };
+      try {
+        apkMeta = await extractApkMetadata(filePath);
+        const metaParts = [apkMeta.manifest && 'manifest', apkMeta.strings && 'strings', apkMeta.fileList && 'file list'].filter(Boolean);
+        scanData.progress.push({ type: 'phase', message: `Extracted: ${metaParts.join(', ') || 'none'}` });
+      } catch (err) {
+        scanData.progress.push({ type: 'warning', message: `Metadata extraction: ${err.message}` });
+      }
+
+      // Phase 2: AI Agent analysis (find new + verify MobSF findings)
       if (useAIAgent !== false) {
         scanData.phases.push({ name: 'ai-agent', status: 'running', startedAt: new Date().toISOString() });
         scanData.progress.push({ type: 'phase', message: 'Starting AI Agent analysis...' });
-
-        // Extract APK/IPA metadata directly for AI analysis
-        scanData.progress.push({ type: 'phase', message: 'Extracting app metadata...' });
-        let apkMeta = { manifest: '', strings: '', fileList: '' };
-        try {
-          apkMeta = await extractApkMetadata(filePath);
-          const metaParts = [apkMeta.manifest && 'manifest', apkMeta.strings && 'strings', apkMeta.fileList && 'file list'].filter(Boolean);
-          scanData.progress.push({ type: 'phase', message: `Extracted: ${metaParts.join(', ') || 'none'}` });
-        } catch (err) {
-          scanData.progress.push({ type: 'warning', message: `Metadata extraction: ${err.message}` });
-        }
 
         let analysisContent = `Mobile App Analysis: ${fileName}\n`;
         analysisContent += `Testing Type: ${testingType === 'greybox' ? 'Grey Box (authenticated)' : 'Black Box (unauthenticated)'}\n`;
@@ -1407,7 +1408,6 @@ app.post('/api/mobile/scan', async (req, res) => {
           analysisContent += `App Info:\n${JSON.stringify(scanData.appInfo, null, 2)}\n\n`;
         }
 
-        // Add extracted APK/IPA metadata
         if (apkMeta.manifest) {
           analysisContent += `=== AndroidManifest.xml / Info.plist ===\n${apkMeta.manifest}\n\n`;
         }
@@ -1428,6 +1428,8 @@ app.post('/api/mobile/scan', async (req, res) => {
         }
 
         try {
+          // Step 1: Run AI skills to find additional bugs
+          scanData.progress.push({ type: 'ai-agent', message: 'AI scanning for additional vulnerabilities...' });
           const aiFindings = await runAllSkills(analysisContent, {
             skills: selectedSkills,
             onProgress: (p) => {
@@ -1435,12 +1437,25 @@ app.post('/api/mobile/scan', async (req, res) => {
             },
           });
           scanData.aiFindings = aiFindings;
+          scanData.progress.push({ type: 'ai-agent', message: `AI found ${aiFindings.length} additional issues` });
+
+          // Step 2: Verify + enrich MobSF findings
+          if (scanData.mobsfFindings.length > 0) {
+            scanData.progress.push({ type: 'ai-agent', message: `Verifying ${scanData.mobsfFindings.length} MobSF findings...` });
+            const enriched = await enrichFindings(scanData.mobsfFindings.slice(0, 15), (p) => {
+              scanData.progress.push({ type: 'ai-verify', ...p });
+            });
+            scanData.enrichedFindings = enriched;
+            const verified = enriched.filter(f => f.status !== 'False Positive').length;
+            const fp = enriched.filter(f => f.status === 'False Positive').length;
+            scanData.progress.push({ type: 'ai-agent', message: `Verified: ${verified} confirmed, ${fp} false positives` });
+          }
 
           const phase = scanData.phases.find(p => p.name === 'ai-agent');
           phase.status = 'completed';
           phase.finishedAt = new Date().toISOString();
-          phase.findingsCount = aiFindings.length;
-          scanData.progress.push({ type: 'ai-agent', message: `AI Agent found ${aiFindings.length} issues` });
+          phase.findingsCount = aiFindings.length + (scanData.enrichedFindings?.length || 0);
+          scanData.progress.push({ type: 'ai-agent', message: `AI Agent complete: ${aiFindings.length} new + ${scanData.enrichedFindings?.length || 0} verified` });
         } catch (err) {
           const phase = scanData.phases.find(p => p.name === 'ai-agent');
           phase.status = 'error';
@@ -1449,30 +1464,178 @@ app.post('/api/mobile/scan', async (req, res) => {
         }
       }
 
-      // Phase 3: Finding enrichment (if MobSF findings exist)
-      if (scanData.mobsfFindings.length > 0 && useAIAgent !== false) {
-        scanData.phases.push({ name: 'enrichment', status: 'running', startedAt: new Date().toISOString() });
-        scanData.progress.push({ type: 'phase', message: 'Enriching MobSF findings with AI...' });
+      // Phase 3: Static config checks (APK/IPA metadata analysis)
+      if (useAIAgent !== false) {
+        scanData.phases.push({ name: 'config-checks', status: 'running', startedAt: new Date().toISOString() });
+        scanData.progress.push({ type: 'phase', message: 'Running static security config checks...' });
+        scanData.configChecks = { sslPinning: null, rootDetection: null, insecureStorage: null, hardcodedCreds: [], allowBackup: null, debuggable: null, cleartextTraffic: null };
 
         try {
-          const enriched = await enrichFindings(scanData.mobsfFindings.slice(0, 15), (p) => {
-            scanData.progress.push({ type: 'enrichment', ...p });
-          });
-          scanData.enrichedFindings = enriched;
-          const phase = scanData.phases.find(p => p.name === 'enrichment');
-          phase.status = 'completed';
-          phase.finishedAt = new Date().toISOString();
+          const manifest = apkMeta?.manifest || '';
+          const strings = apkMeta?.strings || '';
+          const allMeta = `${manifest}\n${strings}`;
+
+          // SSL Pinning check
+          const sslPatterns = ['CertificatePinner', 'certificatePinner', 'NetworkSecurityConfig', 'network_security_config', 'ssl_pinning', 'TrustManagerImpl'];
+          const sslAntiPatterns = ['ALLOW_ALL_HOSTNAME', 'AllowAllHostnameVerifier', 'X509TrustManager', 'checkServerTrusted.*return', 'TRUST_ALL', 'InsecureTrustManager'];
+          const hasPinning = sslPatterns.some(p => allMeta.includes(p));
+          const hasInsecureTrust = sslAntiPatterns.some(p => allMeta.includes(p));
+          if (hasInsecureTrust) {
+            scanData.configChecks.sslPinning = 'insecure_override';
+            scanData.mergedFindings.push({
+              id: `CFG-SSL-${Math.random().toString(36).slice(2, 6)}`,
+              title: 'Insecure TrustManager / Hostname Verifier Override',
+              severity: 'High',
+              description: 'App overrides SSL certificate validation with an insecure implementation.',
+              evidence: { detail: sslAntiPatterns.filter(p => allMeta.includes(p)).join(', ') },
+              impact: 'MitM attacker can intercept all HTTPS traffic without triggering certificate errors.',
+              remediation: 'Remove insecure TrustManager/HostnameVerifier overrides. Use default system validation or implement proper certificate pinning.',
+              source: 'static-config-check', status: 'Open', confidence: 'High',
+              tags: ['network', 'MASVS-NETWORK'],
+            });
+          } else if (hasPinning) {
+            scanData.configChecks.sslPinning = 'implemented';
+          } else {
+            scanData.configChecks.sslPinning = 'not_detected';
+            scanData.mergedFindings.push({
+              id: `CFG-NOSSL-${Math.random().toString(36).slice(2, 6)}`,
+              title: 'No SSL Certificate Pinning Detected',
+              severity: 'Medium',
+              description: 'No certificate pinning implementation found in static analysis.',
+              evidence: { detail: 'No CertificatePinner, NetworkSecurityConfig, or custom TrustManager with pinning found.' },
+              impact: 'MitM attacker with a rogue CA certificate can intercept HTTPS traffic.',
+              remediation: 'Implement certificate pinning using OkHttp CertificatePinner, network_security_config.xml, or TrustKit.',
+              source: 'static-config-check', status: 'Open', confidence: 'Medium',
+              tags: ['network', 'MASVS-NETWORK'],
+            });
+          }
+
+          // Root detection check
+          const rootPatterns = ['RootBeer', 'isRooted', 'detectRoot', 'rootCheck', 'SafetyNet', 'PlayIntegrity', 'isDeviceRooted', 'checkRoot'];
+          const hasRootDetection = rootPatterns.some(p => allMeta.includes(p));
+          scanData.configChecks.rootDetection = hasRootDetection ? 'implemented' : 'not_detected';
+          if (!hasRootDetection) {
+            scanData.mergedFindings.push({
+              id: `CFG-NOROOT-${Math.random().toString(36).slice(2, 6)}`,
+              title: 'No Root/Jailbreak Detection Implemented',
+              severity: 'Low',
+              description: 'No root detection library or check found.',
+              evidence: { detail: 'No RootBeer, SafetyNet/PlayIntegrity, or custom root detection patterns found.' },
+              impact: 'App can run on rooted devices where an attacker may access app sandbox or bypass security controls.',
+              remediation: 'Implement root detection using RootBeer or Google Play Integrity API.',
+              source: 'static-config-check', status: 'Open', confidence: 'Medium',
+              tags: ['resilience', 'MASVS-RESILIENCE'],
+            });
+          }
+
+          // SharedPreferences insecure usage
+          const hasSharedPrefs = allMeta.includes('SharedPreferences') || allMeta.includes('getSharedPreferences');
+          const hasEncryptedPrefs = allMeta.includes('EncryptedSharedPreferences');
+          const hasModeWorld = allMeta.includes('MODE_WORLD_READABLE') || allMeta.includes('MODE_WORLD_WRITEABLE');
+          scanData.configChecks.insecureStorage = hasModeWorld ? 'world_accessible' : (hasSharedPrefs && !hasEncryptedPrefs ? 'plaintext' : 'ok');
+          if (hasModeWorld) {
+            scanData.mergedFindings.push({
+              id: `CFG-STORAGE-${Math.random().toString(36).slice(2, 6)}`,
+              title: 'SharedPreferences World-Readable/Writable',
+              severity: 'High',
+              description: 'App uses MODE_WORLD_READABLE or MODE_WORLD_WRITEABLE for SharedPreferences.',
+              evidence: { detail: 'MODE_WORLD_READABLE or MODE_WORLD_WRITEABLE found in code patterns.' },
+              impact: 'Any app on the device can read or modify the shared preferences data.',
+              remediation: 'Use MODE_PRIVATE for SharedPreferences. Migrate sensitive data to EncryptedSharedPreferences.',
+              source: 'static-config-check', status: 'Open', confidence: 'High',
+              tags: ['storage', 'MASVS-STORAGE'],
+            });
+          } else if (hasSharedPrefs && !hasEncryptedPrefs) {
+            scanData.mergedFindings.push({
+              id: `CFG-STORAGE-${Math.random().toString(36).slice(2, 6)}`,
+              title: 'SharedPreferences Without Encryption',
+              severity: 'Medium',
+              description: 'App uses SharedPreferences without EncryptedSharedPreferences. Data is stored in plaintext XML.',
+              evidence: { detail: 'SharedPreferences found but no EncryptedSharedPreferences usage detected.' },
+              impact: 'On rooted devices or via backup, an attacker can read plaintext SharedPreferences data.',
+              remediation: 'Use EncryptedSharedPreferences from AndroidX Security library for sensitive data.',
+              source: 'static-config-check', status: 'Open', confidence: 'Medium',
+              tags: ['storage', 'MASVS-STORAGE'],
+            });
+          }
+
+          // Hardcoded credentials
+          const credPatterns = [
+            /(?:password|passwd|pwd)\s*[=:]\s*["']([^"']{4,})/gi,
+            /(?:api[_-]?key|apikey)\s*[=:]\s*["']([A-Za-z0-9_\-]{16,})/gi,
+            /(?:secret[_-]?key|client[_-]?secret)\s*[=:]\s*["']([^"']{8,})/gi,
+            /(?:Bearer|Basic)\s+([A-Za-z0-9+/=_\-.]{20,})/g,
+            /-----BEGIN (?:RSA |EC )?PRIVATE KEY-----/g,
+          ];
+          for (const pattern of credPatterns) {
+            const matches = allMeta.match(pattern) || [];
+            for (const match of matches.slice(0, 3)) {
+              scanData.configChecks.hardcodedCreds.push(match.slice(0, 100));
+            }
+          }
+          if (scanData.configChecks.hardcodedCreds.length) {
+            scanData.mergedFindings.push({
+              id: `CFG-CRED-${Math.random().toString(36).slice(2, 6)}`,
+              title: 'Hardcoded Credentials/Secrets in APK',
+              severity: 'Critical',
+              description: `Found ${scanData.configChecks.hardcodedCreds.length} hardcoded credential(s) or secret(s) in the APK binary.`,
+              evidence: { detail: scanData.configChecks.hardcodedCreds.join('\n') },
+              impact: 'Attacker can decompile the APK and extract credentials to gain unauthorized access.',
+              remediation: 'Remove hardcoded credentials. Use server-side authentication or Android Keystore.',
+              source: 'static-config-check', status: 'Open', confidence: 'High',
+              tags: ['credentials', 'MASVS-STORAGE'],
+            });
+          }
+
+          // allowBackup, debuggable, cleartextTraffic checks
+          scanData.configChecks.allowBackup = manifest.includes('allowBackup=true') || manifest.includes('allowBackup="true"');
+          scanData.configChecks.debuggable = manifest.includes('debuggable=true') || manifest.includes('debuggable="true"');
+          if (scanData.configChecks.debuggable) {
+            scanData.mergedFindings.push({
+              id: `CFG-DEBUG-${Math.random().toString(36).slice(2, 6)}`,
+              title: 'Application is Debuggable',
+              severity: 'High',
+              description: 'android:debuggable is set to true in the manifest.',
+              evidence: { detail: 'android:debuggable="true" found in AndroidManifest.xml' },
+              impact: 'Attacker can attach a debugger, set breakpoints, and bypass security checks at runtime.',
+              remediation: 'Set android:debuggable="false" in release builds.',
+              source: 'static-config-check', status: 'Open', confidence: 'High',
+              tags: ['resilience', 'MASVS-RESILIENCE'],
+            });
+          }
+          scanData.configChecks.cleartextTraffic = manifest.includes('usesCleartextTraffic=true') || manifest.includes('usesCleartextTraffic="true"');
+          if (scanData.configChecks.cleartextTraffic) {
+            scanData.mergedFindings.push({
+              id: `CFG-CLEAR-${Math.random().toString(36).slice(2, 6)}`,
+              title: 'Cleartext HTTP Traffic Allowed',
+              severity: 'Medium',
+              description: 'android:usesCleartextTraffic is set to true, allowing unencrypted HTTP connections.',
+              evidence: { detail: 'android:usesCleartextTraffic="true" in AndroidManifest.xml' },
+              impact: 'Network traffic can be intercepted in plaintext.',
+              remediation: 'Set android:usesCleartextTraffic="false" and use HTTPS for all connections.',
+              source: 'static-config-check', status: 'Open', confidence: 'High',
+              tags: ['network', 'MASVS-NETWORK'],
+            });
+          }
+
+          const cfgPhase = scanData.phases.find(p => p.name === 'config-checks');
+          cfgPhase.status = 'completed';
+          cfgPhase.finishedAt = new Date().toISOString();
+          const cfgFindings = scanData.mergedFindings.filter(f => f.source === 'static-config-check').length;
+          cfgPhase.findingsCount = cfgFindings;
+          scanData.progress.push({ type: 'config', message: `Config checks complete: ${cfgFindings} findings` });
         } catch (err) {
-          const phase = scanData.phases.find(p => p.name === 'enrichment');
-          phase.status = 'error';
-          phase.error = err.message;
+          const cfgPhase = scanData.phases.find(p => p.name === 'config-checks');
+          cfgPhase.status = 'error';
+          cfgPhase.error = err.message;
         }
       }
 
-      // Merge all findings
+      // Merge all findings (config-check findings already in mergedFindings)
+      const configFindings = scanData.mergedFindings.filter(f => f.source === 'static-config-check');
       const seen = new Set();
       scanData.mergedFindings = [];
-      for (const f of [...scanData.mobsfFindings, ...scanData.aiFindings, ...scanData.enrichedFindings]) {
+      for (const f of [...scanData.mobsfFindings, ...scanData.aiFindings, ...scanData.enrichedFindings, ...configFindings]) {
         const key = `${f.title}-${f.severity}`.toLowerCase();
         if (!seen.has(key)) {
           seen.add(key);

@@ -10,12 +10,15 @@ services:
     restart: unless-stopped
     ports:
       - "3001:3001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file: .env
     environment:
       - MONGO_URL=mongodb://mongo:27017
       - MONGO_DB=strix
       - PORT=3001
       - JWT_SECRET=${JWT_SECRET:-change-me-to-a-random-secret}
+      - MOBSF_URL=http://host.docker.internal:8000
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data/strix_runs:/app/strix_runs
@@ -23,6 +26,7 @@ services:
       - ./data/mobile-uploads:/app/mobile-uploads
       - ./data/report-templates:/app/report-templates
       - ./data/strix-config:/root/.strix
+      - ./mobile-pentest:/app/mobile-pentest
     depends_on:
       - mongo
 
