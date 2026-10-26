@@ -1842,9 +1842,10 @@ app.post('/api/mobile/scan/:id/api-pentest', async (req, res) => {
   child.stdout.on('data', (data) => { processScanChunk(data.toString(), strixScan); tryParseRunName(strixScan); });
   child.stderr.on('data', (data) => { processScanChunk(data.toString(), strixScan); });
   child.on('close', async (code) => {
-    strixScan.status = code === 0 ? 'completed' : 'failed';
+    strixScan.status = (code === 0 || code === 2) ? 'completed' : 'failed';
     strixScan.exitCode = code;
     strixScan.finishedAt = new Date().toISOString();
+    if (!strixScan.runName) await detectRunName(strixScan);
     if (strixScan.runName) strixScan.findings = await loadFindings(strixScan.runName);
     saveScan(strixScan).catch(() => {});
   });
@@ -1855,7 +1856,7 @@ app.post('/api/mobile/scan/:id/api-pentest', async (req, res) => {
     saveScan(strixScan).catch(() => {});
   });
 
-  res.json({ scanId, targets, message: `Strix API pentest started on ${targets.length} endpoints` });
+  res.json({ scanId, targets, message: `API pentest started on ${targets.length} endpoints` });
 });
 
 app.get('/api/mobile/skills', (_req, res) => {
@@ -2629,7 +2630,7 @@ app.post('/api/mobile/dynamic/scan', async (req, res) => {
       // Phase 5: Feed traffic to Strix for API pentesting
       if (apiEndpoints.length > 0) {
         scanData.phases.push({ name: 'api-pentest', status: 'running', startedAt: new Date().toISOString() });
-        log('phase', `Starting Strix API pentest on ${Math.min(apiEndpoints.length, 10)} endpoints...`);
+        log('phase', `Starting API pentest on ${Math.min(apiEndpoints.length, 10)} endpoints...`);
 
         // Extract unique target base URLs
         const targetUrls = [...new Set(trafficData.filter(t => t.status_code).map(t => {
@@ -2673,11 +2674,12 @@ app.post('/api/mobile/dynamic/scan', async (req, res) => {
 
             await new Promise(resolve => {
               strixChild.on('close', async (code) => {
-                strixScan.status = code === 0 ? 'completed' : 'failed';
+                strixScan.status = (code === 0 || code === 2) ? 'completed' : 'failed';
                 strixScan.finishedAt = new Date().toISOString();
+                if (!strixScan.runName) await detectRunName(strixScan);
                 if (strixScan.runName) strixScan.findings = await loadFindings(strixScan.runName);
                 saveScan(strixScan).catch(() => {});
-                log('api-pentest', `Strix finished: ${strixScan.findings.length} findings`);
+                log('api-pentest', `Pentest agent finished: ${strixScan.findings.length} findings`);
                 resolve();
               });
               strixChild.on('error', (err) => {
@@ -2685,7 +2687,7 @@ app.post('/api/mobile/dynamic/scan', async (req, res) => {
                 if (!strixScan.logs) strixScan.logs = [];
                 strixScan.logs.push({ type: 'error', msg: `Error: ${err.message}`, ts: new Date().toISOString() });
                 saveScan(strixScan).catch(() => {});
-                log('error', `Strix error: ${err.message}`);
+                log('error', `Scan error: ${err.message}`);
                 resolve();
               });
             });
@@ -2695,7 +2697,7 @@ app.post('/api/mobile/dynamic/scan', async (req, res) => {
               scanData.mergedFindings.push({ ...f, source: 'strix-api-pentest' });
             }
           } else {
-            log('warning', 'LLM not configured — skipping Strix API pentest');
+            log('warning', 'LLM not configured — skipping API pentest');
           }
         }
         const phase = scanData.phases.find(p => p.name === 'api-pentest');
@@ -2918,5 +2920,5 @@ const PORT = process.env.PORT || 3001;
   } catch (err) {
     console.warn(`MongoDB not available (${err.message}), running in memory-only mode`);
   }
-  app.listen(PORT, () => console.log(`Strix Web Server running on http://localhost:${PORT}`));
+  app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
 })();
