@@ -32,11 +32,11 @@ export class MobSFClient {
   }
 
   async upload(filePath, fileName) {
-    const { readFile } = await import('fs/promises');
-    const fileData = await readFile(filePath);
+    const { openAsBlob } = await import('node:fs');
+    const blob = await openAsBlob(filePath);
 
     const formData = new FormData();
-    formData.append('file', new Blob([fileData]), fileName);
+    formData.append('file', blob, fileName);
 
     return this.request('/upload', {
       method: 'POST',
