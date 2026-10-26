@@ -10,8 +10,10 @@ export class MobSFClient {
   async request(path, options = {}) {
     const url = `${this.baseUrl}/api/v1${path}`;
     const headers = { Authorization: this.apiKey, ...options.headers };
+    const timeout = options.timeout || 300000;
+    delete options.timeout;
 
-    const res = await fetch(url, { ...options, headers });
+    const res = await fetch(url, { ...options, headers, signal: AbortSignal.timeout(timeout) });
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`MobSF API error ${res.status}: ${text}`);
@@ -41,6 +43,7 @@ export class MobSFClient {
     return this.request('/upload', {
       method: 'POST',
       body: formData,
+      timeout: 600000,
     });
   }
 
@@ -52,6 +55,7 @@ export class MobSFClient {
     return this.request('/scan', {
       method: 'POST',
       body: formData,
+      timeout: 900000,
     });
   }
 
@@ -62,6 +66,7 @@ export class MobSFClient {
     return this.request('/report_json', {
       method: 'POST',
       body: formData,
+      timeout: 600000,
     });
   }
 
