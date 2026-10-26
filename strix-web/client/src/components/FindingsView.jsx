@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './Findings.css';
 
 const SEVERITY_COLORS = {
@@ -62,12 +62,35 @@ export default function FindingsView({ findings, findingsMap = {}, viewingScanId
     }
   };
 
+  const loadedRef = useRef(false);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!findings.length && !scanIds.length && !loadedRef.current) {
+      loadedRef.current = true;
+      setLoading(true);
+      (async () => {
+        try {
+          const res = await window.apiFetch('/api/all-scans');
+          const scans = await res.json();
+          for (const s of scans) {
+            if (s.findings?.length && onFindingsUpdated) {
+              onSelectScan(s.id);
+              onFindingsUpdated(s.id);
+              break;
+            }
+          }
+        } catch {}
+        setLoading(false);
+      })();
+    }
+  }, []);
+
   if (!findings.length && !scanIds.length) {
     return (
       <div className="panel">
         <div className="panel-header"><h2>Findings</h2></div>
         <div className="empty-state">
-          <p>No findings yet. Run a scan first, or load findings from scan history.</p>
+          <p>{loading ? 'Loading findings...' : 'No findings yet. Run a scan first, or load findings from scan history.'}</p>
         </div>
       </div>
     );

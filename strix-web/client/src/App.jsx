@@ -85,6 +85,7 @@ export default function App() {
   if (!user) return <Login onLogin={handleLogin} />;
 
   const isAdmin = user.role === 'admin';
+
   const currentFindings = viewingScanId ? (findingsMap[viewingScanId] || []) : [];
   const totalFindings = Object.values(findingsMap).reduce((sum, f) => sum + f.length, 0);
 

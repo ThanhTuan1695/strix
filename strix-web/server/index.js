@@ -4,7 +4,8 @@ import { spawn } from 'child_process';
 import { readFile, writeFile, mkdir, readdir, stat, rm, rename } from 'fs/promises';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, createReadStream } from 'fs';
+import { createInterface } from 'readline';
 import multer from 'multer';
 import { MobSFClient, normalizeMobSFFindings, extractApiEndpoints, getMobSFAppInfo } from './mobsf.js';
 import { runAllSkills, enrichFindings, getAvailableSkills, runSkill } from './mobile-agent.js';
@@ -272,10 +273,13 @@ app.post('/api/scan', async (req, res) => {
     tryParseRunName(scanData);
   });
   child.stderr.on('data', (data) => { processScanChunk(data.toString(), scanData); });
+  watchStrixLog(scanData);
   child.on('close', async (code) => {
-    scanData.status = code === 0 ? 'completed' : 'failed';
+    scanData.status = (code === 0 || code === 2) ? 'completed' : 'failed';
     scanData.exitCode = code;
     scanData.finishedAt = new Date().toISOString();
+    if (scanData._logWatcher) clearInterval(scanData._logWatcher);
+    if (!scanData.runName) await detectRunName(scanData);
     if (scanData.runName) {
       scanData.findings = await loadFindings(scanData.runName);
     }
@@ -283,6 +287,7 @@ app.post('/api/scan', async (req, res) => {
   });
   child.on('error', (err) => {
     scanData.status = 'error';
+    if (scanData._logWatcher) clearInterval(scanData._logWatcher);
     if (!scanData.logs) scanData.logs = [];
     scanData.logs.push({ type: 'error', msg: `Error: ${err.message}`, ts: new Date().toISOString() });
     saveScan(scanData).catch(() => {});
@@ -357,10 +362,127 @@ function processScanChunk(chunk, scanData) {
   }
 }
 
+function parseLogLine(line) {
+  const m = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)\s+(INFO|WARNING|ERROR)\s+\S+\s+-\s+(\S+):\s+(.*)/);
+  if (!m) return null;
+  const [, ts, level, module, msg] = m;
+
+  if ((module === 'strix.agents.registry' || module === 'strix.core.agents') && msg.includes('agent.register')) {
+    const name = msg.match(/agent\.register \w+ \((.+?)\)/)?.[1];
+    if (name) return { type: 'agent', msg: `Agent spawned: ${name}`, ts };
+  }
+  if (module === 'strix.agents.factory' && msg.includes('Built')) {
+    const name = msg.match(/Built (?:root|child) agent '(.+?)'/)?.[1];
+    if (name) return { type: 'agent', msg: `Agent ready: ${name}`, ts };
+  }
+  if ((module === 'strix.agents.registry' || module === 'strix.core.agents') && msg.includes('agent_finish')) {
+    const filed = msg.match(/filed_reports=(\d+)/)?.[1];
+    const name = msg.match(/agent_finish: (\S+)/)?.[1];
+    if (filed && parseInt(filed) > 0) return { type: 'finding', msg: `${name}: ${filed} finding(s) reported`, ts };
+    if (name) return { type: 'agent-done', msg: `Agent finished: ${name}`, ts };
+  }
+  if (msg.includes('Saved') && msg.includes('vulnerability report')) {
+    return { type: 'finding', msg: msg.trim(), ts };
+  }
+  if (msg.includes('Vulnerability report')) {
+    const sev = msg.match(/severity=(\w+)/)?.[1];
+    const id = msg.match(/(vuln-\d+)/)?.[1];
+    if (id) return { type: 'finding', msg: `Finding ${id} [${(sev || 'unknown').toUpperCase()}]`, ts };
+  }
+  if (msg.includes('finish_scan')) {
+    const count = msg.match(/(\d+) vulnerability/)?.[1];
+    return { type: 'complete', msg: `Scan completed — ${count || 0} vulnerabilities found`, ts };
+  }
+  if (module === 'strix.report.sarif') {
+    const count = msg.match(/\((\d+) results?\)/)?.[1];
+    if (count && parseInt(count) > 0) return { type: 'progress', msg: `${count} finding(s) detected so far`, ts };
+  }
+  if (module === 'strix.runtime.scan' || module === 'strix.core.runner' || (msg.includes('Starting') && msg.includes('scan'))) {
+    return { type: 'start', msg: 'Penetration test started', ts };
+  }
+  if (msg.includes('target') && (msg.includes('discover') || msg.includes('recon') || msg.includes('crawl'))) {
+    return { type: 'progress', msg: msg.replace(/strix[_.\-\w]*/gi, '').substring(0, 150).trim(), ts };
+  }
+  if (level === 'ERROR') {
+    return { type: 'error', msg: msg.substring(0, 200), ts };
+  }
+  if (module === 'strix.llm.request_log') {
+    const cost = msg.match(/cost=([\d.]+)/)?.[1];
+    const model = msg.match(/model=(\S+)/)?.[1];
+    if (cost && parseFloat(cost) > 0) return { type: 'llm', msg: `AI analysis${model ? ` (${model})` : ''}: $${cost}`, ts };
+  }
+  return null;
+}
+
+async function detectRunName(scanData) {
+  try {
+    const target = (scanData.targets?.[0] || '').replace(/https?:\/\//, '').replace(/[^a-z0-9]/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+    const prefix = target.substring(0, 25);
+    const scanStart = new Date(scanData.startedAt).getTime() - 10000;
+    const dirs = await readdir(RUNS_DIR);
+    let best = null;
+    let bestTime = 0;
+    for (const d of dirs) {
+      if (!d.toLowerCase().startsWith(prefix)) continue;
+      const dirPath = join(RUNS_DIR, d);
+      const s = await stat(dirPath);
+      if (!s.isDirectory()) continue;
+      if (s.birthtimeMs < scanStart && s.mtimeMs < scanStart) continue;
+      try {
+        const runJson = JSON.parse(await readFile(join(dirPath, 'run.json'), 'utf-8'));
+        const runStart = new Date(runJson.start_time).getTime();
+        if (runStart >= scanStart && runStart > bestTime) {
+          bestTime = runStart;
+          best = d;
+        }
+      } catch {
+        if (s.birthtimeMs >= scanStart && s.birthtimeMs > bestTime) {
+          bestTime = s.birthtimeMs;
+          best = d;
+        }
+      }
+    }
+    if (best) scanData.runName = best;
+  } catch {}
+}
+
+function watchStrixLog(scanData) {
+  if (!scanData.logs) scanData.logs = [];
+  let bytesRead = 0;
+  const seenMsgs = new Set();
+
+  const poll = setInterval(async () => {
+    if (scanData.status !== 'running') { clearInterval(poll); return; }
+    if (!scanData.runName) await detectRunName(scanData);
+    if (!scanData.runName) return;
+    const logPath = join(RUNS_DIR, scanData.runName, 'strix.log');
+    if (!existsSync(logPath)) return;
+    try {
+      const { size } = await stat(logPath);
+      if (size <= bytesRead) return;
+      const stream = createReadStream(logPath, { start: bytesRead, encoding: 'utf-8' });
+      const rl = createInterface({ input: stream, crlfDelay: Infinity });
+      let newBytes = 0;
+      for await (const line of rl) {
+        newBytes += Buffer.byteLength(line, 'utf-8') + 1;
+        const event = parseLogLine(line);
+        if (event && !seenMsgs.has(event.msg)) {
+          seenMsgs.add(event.msg);
+          scanData.logs.push(event);
+        }
+      }
+      bytesRead = size;
+      saveScan(scanData).catch(() => {});
+    } catch {}
+  }, 3000);
+
+  scanData._logWatcher = poll;
+}
+
 app.get('/api/scan/:id', (req, res) => {
   const scan = activeScans.get(req.params.id) || mobileScans.get(req.params.id);
   if (!scan) return res.status(404).json({ error: 'Scan not found' });
-  const { _rawOutput, _lineBuffer, output, ...data } = scan;
+  const { _rawOutput, _lineBuffer, _logWatcher, output, ...data } = scan;
   if (data.mergedFindings?.length) data.findings = data.mergedFindings;
   res.json(data);
 });
@@ -433,15 +555,19 @@ app.post('/api/scan/:id/retry', async (req, res) => {
 
   child.stdout.on('data', (data) => { processScanChunk(data.toString(), scanData); tryParseRunName(scanData); });
   child.stderr.on('data', (data) => { processScanChunk(data.toString(), scanData); });
+  watchStrixLog(scanData);
   child.on('close', async (code) => {
-    scanData.status = code === 0 ? 'completed' : 'failed';
+    scanData.status = (code === 0 || code === 2) ? 'completed' : 'failed';
     scanData.exitCode = code;
     scanData.finishedAt = new Date().toISOString();
+    if (scanData._logWatcher) clearInterval(scanData._logWatcher);
+    if (!scanData.runName) await detectRunName(scanData);
     if (scanData.runName) scanData.findings = await loadFindings(scanData.runName);
     saveScan(scanData).catch(() => {});
   });
   child.on('error', (err) => {
     scanData.status = 'error';
+    if (scanData._logWatcher) clearInterval(scanData._logWatcher);
     if (!scanData.logs) scanData.logs = [];
     scanData.logs.push({ type: 'error', msg: `Error: ${err.message}`, ts: new Date().toISOString() });
     saveScan(scanData).catch(() => {});
@@ -527,7 +653,7 @@ app.get('/api/runs/:name/findings', async (req, res) => {
 });
 
 app.get('/api/all-scans', async (_req, res) => {
-  const sessionScans = Array.from(activeScans.values()).map(({ pid, ...rest }) => ({
+  const sessionScans = Array.from(activeScans.values()).map(({ pid, _logWatcher, _rawOutput, _lineBuffer, ...rest }) => ({
     ...rest,
     source: 'session',
     findingsCount: rest.findings?.length || 0,
@@ -2778,6 +2904,9 @@ const PORT = process.env.PORT || 3001;
     const savedScans = await loadAllScans();
     for (const s of savedScans) {
       if (s.status === 'running') s.status = 'interrupted';
+      if (s.runName && (!s.findings || s.findings.length === 0)) {
+        try { s.findings = await loadFindings(s.runName); } catch {}
+      }
       activeScans.set(s.id, s);
     }
     const savedMobile = await loadAllMobileScans();
