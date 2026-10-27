@@ -488,7 +488,7 @@ app.get('/api/scan/:id', (req, res) => {
 });
 
 app.get('/api/scans', (_req, res) => {
-  const scans = Array.from(activeScans.values()).map(({ output, ...rest }) => rest);
+  const scans = Array.from(activeScans.values()).map(({ pid, output, _rawOutput, _lineBuffer, _logWatcher, ...rest }) => rest);
   res.json(scans);
 });
 
@@ -653,7 +653,7 @@ app.get('/api/runs/:name/findings', async (req, res) => {
 });
 
 app.get('/api/all-scans', async (_req, res) => {
-  const sessionScans = Array.from(activeScans.values()).map(({ pid, _logWatcher, _rawOutput, _lineBuffer, ...rest }) => ({
+  const sessionScans = Array.from(activeScans.values()).map(({ pid, output, _logWatcher, _rawOutput, _lineBuffer, ...rest }) => ({
     ...rest,
     source: 'session',
     findingsCount: rest.findings?.length || 0,
@@ -1788,7 +1788,21 @@ app.get('/api/mobile/scan/:id', (req, res) => {
 });
 
 app.get('/api/mobile/scans', (_req, res) => {
-  const scans = Array.from(mobileScans.values()).map(({ filePath, ...rest }) => rest);
+  const scans = Array.from(mobileScans.values()).map(s => ({
+    id: s.id,
+    scanType: s.scanType,
+    status: s.status,
+    fileName: s.fileName,
+    testingType: s.testingType || 'blackbox',
+    startedAt: s.startedAt,
+    finishedAt: s.finishedAt,
+    findingsCount: s.mergedFindings?.length || 0,
+    phases: s.phases,
+    appInfo: s.appInfo,
+    progress: s.progress,
+    strixScanId: s.strixScanId,
+    configChecks: s.configChecks,
+  }));
   res.json(scans);
 });
 
