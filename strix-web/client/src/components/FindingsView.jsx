@@ -16,22 +16,44 @@ const STATUSES = ['Open', 'Confirmed', 'False Positive', 'Accepted Risk', 'Fixed
 export default function FindingsView({ findings, findingsMap = {}, viewingScanId, onSelectScan, onFindingsUpdated }) {
   const [selectedId, setSelectedId] = useState(null);
   const [filter, setFilter] = useState('all');
+  const [viewMode, setViewMode] = useState('all');
+  const [allFindings, setAllFindings] = useState([]);
+  const [loadingAll, setLoadingAll] = useState(false);
+  const [scanFilter, setScanFilter] = useState('all');
 
   const scanIds = Object.keys(findingsMap).filter(k => findingsMap[k]?.length > 0);
 
+  const scanTargets = viewMode === 'all' ? [...new Set(allFindings.map(f => f._scanTarget).filter(Boolean))] : [];
+
+  const baseFindings = viewMode === 'all' ? allFindings : findings;
+  const displayFindings = (viewMode === 'all' && scanFilter !== 'all')
+    ? baseFindings.filter(f => f._scanTarget === scanFilter)
+    : baseFindings;
+
   const filtered = filter === 'all'
-    ? findings
-    : findings.filter(f => f.severity === filter);
+    ? displayFindings
+    : displayFindings.filter(f => f.severity === filter);
 
   const sorted = [...filtered].sort((a, b) =>
     (SEVERITY_ORDER[a.severity] ?? 5) - (SEVERITY_ORDER[b.severity] ?? 5));
 
-  const selected = findings.find(f => f.id === selectedId);
+  const selected = displayFindings.find(f => f.id === selectedId);
   const counts = {};
-  for (const f of findings) counts[f.severity] = (counts[f.severity] || 0) + 1;
+  for (const f of displayFindings) counts[f.severity] = (counts[f.severity] || 0) + 1;
+
+  const loadAllFindings = async () => {
+    setLoadingAll(true);
+    try {
+      const res = await window.apiFetch('/api/all-findings');
+      if (res.ok) setAllFindings(await res.json());
+    } catch {}
+    setLoadingAll(false);
+  };
+
+  useEffect(() => { loadAllFindings(); }, []);
 
   const updateFinding = async (findingId, updates) => {
-    const scanId = viewingScanId;
+    const scanId = viewMode === 'all' ? allFindings.find(f => f.id === findingId)?._scanId : viewingScanId;
     if (!scanId) return;
     let url, method = 'PATCH';
     if (scanId.startsWith('scan-') || scanId.startsWith('mobile-')) {
@@ -41,12 +63,15 @@ export default function FindingsView({ findings, findingsMap = {}, viewingScanId
       url = `/api/runs/${encodeURIComponent(runName)}/finding/${findingId}`;
     } else return;
     const res = await window.apiFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
-    if (res.ok && onFindingsUpdated) onFindingsUpdated(scanId);
+    if (res.ok) {
+      if (viewMode === 'all') loadAllFindings();
+      if (onFindingsUpdated) onFindingsUpdated(scanId);
+    }
     return res.ok;
   };
 
   const deleteFinding = async (findingId) => {
-    const scanId = viewingScanId;
+    const scanId = viewMode === 'all' ? allFindings.find(f => f.id === findingId)?._scanId : viewingScanId;
     if (!scanId) return;
     let url;
     if (scanId.startsWith('scan-') || scanId.startsWith('mobile-')) {
@@ -58,39 +83,17 @@ export default function FindingsView({ findings, findingsMap = {}, viewingScanId
     const res = await window.apiFetch(url, { method: 'DELETE' });
     if (res.ok) {
       setSelectedId(null);
+      if (viewMode === 'all') loadAllFindings();
       if (onFindingsUpdated) onFindingsUpdated(scanId);
     }
   };
 
-  const loadedRef = useRef(false);
-  const [loading, setLoading] = useState(false);
-  useEffect(() => {
-    if (!findings.length && !scanIds.length && !loadedRef.current) {
-      loadedRef.current = true;
-      setLoading(true);
-      (async () => {
-        try {
-          const res = await window.apiFetch('/api/all-scans');
-          const scans = await res.json();
-          for (const s of scans) {
-            if (s.findings?.length && onFindingsUpdated) {
-              onSelectScan(s.id);
-              onFindingsUpdated(s.id);
-              break;
-            }
-          }
-        } catch {}
-        setLoading(false);
-      })();
-    }
-  }, []);
-
-  if (!findings.length && !scanIds.length) {
+  if (!allFindings.length && !findings.length && !scanIds.length) {
     return (
       <div className="panel">
         <div className="panel-header"><h2>Findings</h2></div>
         <div className="empty-state">
-          <p>{loading ? 'Loading findings...' : 'No findings yet. Run a scan first, or load findings from scan history.'}</p>
+          <p>{loadingAll ? 'Loading findings...' : 'No findings yet. Run a scan first.'}</p>
         </div>
       </div>
     );
@@ -100,7 +103,30 @@ export default function FindingsView({ findings, findingsMap = {}, viewingScanId
     <div className="findings-layout">
       {/* Left: List */}
       <div className="findings-list">
-        {scanIds.length > 1 && (
+        <div className="findings-view-toggle">
+          <button className={`toggle-btn ${viewMode === 'all' ? 'active' : ''}`} onClick={() => { setViewMode('all'); setFilter('all'); setScanFilter('all'); setSelectedId(null); }}>
+            All Findings
+          </button>
+          {scanIds.length > 0 && (
+            <button className={`toggle-btn ${viewMode === 'scan' ? 'active' : ''}`} onClick={() => { setViewMode('scan'); setFilter('all'); setScanFilter('all'); setSelectedId(null); }}>
+              By Scan
+            </button>
+          )}
+        </div>
+
+        {viewMode === 'all' && scanTargets.length > 1 && (
+          <div className="scan-selector">
+            <label>Scan:</label>
+            <select value={scanFilter} onChange={e => { setScanFilter(e.target.value); setFilter('all'); setSelectedId(null); }}>
+              <option value="all">All scans ({allFindings.length})</option>
+              {scanTargets.map(t => (
+                <option key={t} value={t}>{t} ({allFindings.filter(f => f._scanTarget === t).length})</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {viewMode === 'scan' && scanIds.length > 1 && (
           <div className="scan-selector">
             <label>Scan:</label>
             <select value={viewingScanId || ''} onChange={e => onSelectScan?.(e.target.value)}>
@@ -110,8 +136,9 @@ export default function FindingsView({ findings, findingsMap = {}, viewingScanId
             </select>
           </div>
         )}
+
         <div className="findings-header">
-          <h2>Findings ({findings.length})</h2>
+          <h2>Findings ({displayFindings.length})</h2>
           <div className="severity-filters">
             <button className={`sev-btn ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
               All
@@ -128,8 +155,8 @@ export default function FindingsView({ findings, findingsMap = {}, viewingScanId
         </div>
 
         <div className="findings-items">
-          {sorted.map(f => (
-            <button key={f.id}
+          {sorted.map((f, idx) => (
+            <button key={`${f.id}-${f._scanId || idx}`}
               className={`finding-item ${selectedId === f.id ? 'selected' : ''}`}
               onClick={() => setSelectedId(f.id)}>
               <span className="sev-badge" style={{ background: SEVERITY_COLORS[f.severity] }}>
@@ -140,6 +167,9 @@ export default function FindingsView({ findings, findingsMap = {}, viewingScanId
                 <span className="finding-item-meta">
                   {f.id} {f.affectedAsset && `· ${f.affectedAsset}`}
                 </span>
+                {viewMode === 'all' && f._scanTarget && (
+                  <span className="finding-item-scan">{f._scanTarget}</span>
+                )}
                 {f.status && f.status !== 'Open' && (
                   <span className={`finding-status-badge ${f.status.toLowerCase().replace(' ', '-')}`}>{f.status}</span>
                 )}

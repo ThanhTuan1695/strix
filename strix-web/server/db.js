@@ -29,6 +29,7 @@ export async function saveScan(scanData) {
   delete doc._rawOutput;
   delete doc._lineBuffer;
   delete doc._logWatcher;
+  delete doc._stderrBuf;
   delete doc.output;
   await db.collection('scans').updateOne(
     { id: doc.id },

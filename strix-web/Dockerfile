@@ -54,7 +54,7 @@ RUN npm ci --omit=dev
 COPY server/ ./
 COPY --from=client-build /app/client/dist ./public
 
-RUN mkdir -p uploads mobile-uploads strix_runs report-templates
+RUN mkdir -p uploads mobile-uploads scan_results report-templates
 
 ENV NODE_ENV=production
 ENV PORT=3001

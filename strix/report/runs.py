@@ -1,4 +1,4 @@
-"""Summaries of the runs under ./strix_runs, for pickers and listings."""
+"""Summaries of the runs under ./scan_results, for pickers and listings."""
 
 from __future__ import annotations
 

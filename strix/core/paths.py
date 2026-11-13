@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
-RUNS_DIR_NAME = "strix_runs"
+RUNS_DIR_NAME = os.environ.get("SCAN_OUTPUT_DIR", "scan_results")
 RUNTIME_STATE_DIR_NAME = ".state"
 RUN_RECORD_FILENAME = "run.json"
 

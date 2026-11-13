@@ -25,7 +25,7 @@ const HOME = homedir();
 const CONFIG_DIR = join(HOME, '.strix');
 const CONFIG_FILE = join(CONFIG_DIR, 'cli-config.json');
 const STRIX_BIN = join(CONFIG_DIR, 'bin', 'strix');
-const RUNS_DIR = resolve('./strix_runs');
+const RUNS_DIR = resolve(process.env.SCAN_OUTPUT_DIR || './scan_results');
 
 async function loadConfig() {
   try {
@@ -59,8 +59,9 @@ async function saveConfig(config) {
 
 const LLM_PROVIDERS = [
   { id: 'gemini/gemini-3.7-flash', name: 'Gemini 3.7 Flash (Google)', provider: 'Google', desc: 'FREE tier 15 RPM! ~$0.01/$0.04 per 1M tokens' },
-  { id: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash', provider: 'DeepSeek', desc: '$0.07/$0.28 per 1M tokens, fast' },
-  { id: 'deepseek/deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'DeepSeek', desc: '$0.14/$0.28 per 1M tokens, high quality' },
+  { id: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash', provider: 'DeepSeek', desc: '$0.14/$0.28 per 1M tokens, fast & cheap' },
+  { id: 'deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash 0731 (pinned)', provider: 'DeepSeek', desc: '$0.14/$0.28 per 1M tokens, stable GA version' },
+  { id: 'deepseek/deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'DeepSeek', desc: '$0.51/$1.52 per 1M tokens, strongest reasoning' },
   { id: 'dashscope/qwen3.8-max', name: 'Qwen 3.8 Max (DashScope)', provider: 'Alibaba', desc: '~$0.20/$0.80 per 1M tokens, frontier model' },
   { id: 'ollama/qwen2.5:7b', name: 'Qwen 2.5 7B (Ollama Local)', provider: 'Ollama', local: true, desc: 'Free, runs on your machine' },
   { id: 'ollama/qwen2.5:14b', name: 'Qwen 2.5 14B (Ollama Local)', provider: 'Ollama', local: true, desc: 'Free, needs 12GB+ RAM' },
@@ -272,13 +273,32 @@ app.post('/api/scan', async (req, res) => {
     processScanChunk(data.toString(), scanData);
     tryParseRunName(scanData);
   });
-  child.stderr.on('data', (data) => { processScanChunk(data.toString(), scanData); });
+  child.stderr.on('data', (data) => {
+    const text = data.toString();
+    processScanChunk(text, scanData);
+    if (!scanData._stderrBuf) scanData._stderrBuf = '';
+    scanData._stderrBuf += text;
+  });
   watchStrixLog(scanData);
   child.on('close', async (code) => {
     scanData.status = (code === 0 || code === 2) ? 'completed' : 'failed';
     scanData.exitCode = code;
     scanData.finishedAt = new Date().toISOString();
     if (scanData._logWatcher) clearInterval(scanData._logWatcher);
+    if (scanData.status === 'failed' && scanData._stderrBuf) {
+      const errTail = scanData._stderrBuf.trim().slice(-2000);
+      if (errTail) {
+        if (!scanData.logs) scanData.logs = [];
+        scanData.logs.push({ type: 'error', msg: errTail, ts: new Date().toISOString() });
+      }
+    }
+    if (scanData.status === 'failed' && (!scanData.logs || !scanData.logs.length)) {
+      const rawTail = (scanData._rawOutput || '').trim().slice(-2000);
+      if (rawTail) {
+        if (!scanData.logs) scanData.logs = [];
+        scanData.logs.push({ type: 'error', msg: rawTail, ts: new Date().toISOString() });
+      }
+    }
     if (!scanData.runName) await detectRunName(scanData);
     if (scanData.runName) {
       scanData.findings = await loadFindings(scanData.runName);
@@ -299,7 +319,8 @@ app.post('/api/scan', async (req, res) => {
 function tryParseRunName(scanData) {
   if (scanData.runName) return;
   const raw = scanData._rawOutput || scanData.output || '';
-  const match = raw.match(/strix_runs\/([^\s/]+)/);
+  const dirName = (process.env.SCAN_OUTPUT_DIR || 'scan_results').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = raw.match(new RegExp(dirName + '/([^\\s/]+)'));
   if (match) scanData.runName = match[1];
 }
 
@@ -482,13 +503,13 @@ function watchStrixLog(scanData) {
 app.get('/api/scan/:id', (req, res) => {
   const scan = activeScans.get(req.params.id) || mobileScans.get(req.params.id);
   if (!scan) return res.status(404).json({ error: 'Scan not found' });
-  const { _rawOutput, _lineBuffer, _logWatcher, output, ...data } = scan;
+  const { _rawOutput, _lineBuffer, _logWatcher, _stderrBuf, output, ...data } = scan;
   if (data.mergedFindings?.length) data.findings = data.mergedFindings;
   res.json(data);
 });
 
 app.get('/api/scans', (_req, res) => {
-  const scans = Array.from(activeScans.values()).map(({ pid, output, _rawOutput, _lineBuffer, _logWatcher, ...rest }) => rest);
+  const scans = Array.from(activeScans.values()).map(({ pid, output, _rawOutput, _lineBuffer, _logWatcher, _stderrBuf, ...rest }) => rest);
   res.json(scans);
 });
 
@@ -652,8 +673,34 @@ app.get('/api/runs/:name/findings', async (req, res) => {
   res.json(findings);
 });
 
+app.get('/api/all-findings', async (_req, res) => {
+  const all = [];
+  for (const [id, s] of activeScans) {
+    const findings = s.findings || [];
+    for (const f of findings) all.push({ ...f, _scanId: id, _scanTarget: s.targets?.[0] || s.runName || id });
+  }
+  try {
+    const dirs = await readdir(RUNS_DIR);
+    const sessionRunNames = new Set(Array.from(activeScans.values()).map(s => s.runName).filter(Boolean));
+    for (const d of dirs) {
+      if (sessionRunNames.has(d)) continue;
+      const s = await stat(join(RUNS_DIR, d));
+      if (!s.isDirectory()) continue;
+      const findings = await loadFindings(d);
+      for (const f of findings) all.push({ ...f, _scanId: `run-${d}`, _scanTarget: d });
+    }
+  } catch {}
+  for (const [id, s] of mobileScans) {
+    const findings = s.mergedFindings || [];
+    for (const f of findings) all.push({ ...f, _scanId: id, _scanTarget: s.fileName || id });
+  }
+  const normalize = s => s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : 'Info';
+  for (const f of all) f.severity = normalize(f.severity);
+  res.json(all);
+});
+
 app.get('/api/all-scans', async (_req, res) => {
-  const sessionScans = Array.from(activeScans.values()).map(({ pid, output, _logWatcher, _rawOutput, _lineBuffer, ...rest }) => ({
+  const sessionScans = Array.from(activeScans.values()).map(({ pid, output, _logWatcher, _rawOutput, _lineBuffer, _stderrBuf, ...rest }) => ({
     ...rest,
     source: 'session',
     findingsCount: rest.findings?.length || 0,
@@ -1924,13 +1971,21 @@ async function callLLM(messages, maxTokens = 1024) {
   else if (prefix === 'dashscope') apiBase = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
   else if (!apiBase) apiBase = 'https://api.openai.com/v1';
 
-  const resp = await fetch(`${apiBase}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0.3 }),
-  });
-  const data = await resp.json();
-  return data.choices?.[0]?.message?.content || '';
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
+  try {
+    const resp = await fetch(`${apiBase}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0.3 }),
+      signal: controller.signal,
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error.message || 'LLM API error');
+    return data.choices?.[0]?.message?.content || '';
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // Extract package name from APK binary manifest (no aapt needed)
